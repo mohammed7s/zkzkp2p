@@ -1,0 +1,9 @@
+<svg viewBox="0 0 320 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400&amp;display=swap');
+    .wordmark { font-family: 'JetBrains Mono', monospace; font-size: 42px; font-weight: 400; }
+  </style>
+  <text x="50%" y="40" text-anchor="middle" class="wordmark">
+    <tspan fill="#444444">[</tspan><tspan fill="#A855F7">zk</tspan><tspan fill="#444444">]</tspan><tspan fill="#4ADE80">zkp2p</tspan>
+  </text>
+</svg>

@@ -1,0 +1,23 @@
+<svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="warmGrad1" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#4ADE80"/>
+      <stop offset="22%" stop-color="#FFD93D"/>
+      <stop offset="42%" stop-color="#FF6B6B"/>
+      <stop offset="68%" stop-color="#A855F7"/>
+      <stop offset="100%" stop-color="#1a1a2e"/>
+    </linearGradient>
+    <pattern id="hLines1" patternUnits="userSpaceOnUse" width="200" height="6">
+      <line x1="0" y1="3" x2="200" y2="3" stroke="#0a0a0f" stroke-width="2"/>
+    </pattern>
+  </defs>
+  <!-- Ghost outline behind - white dashed, more visible -->
+  <path d="M38 15 L38 185 L62 185 L62 108 L102 108 Q155 108 155 61.5 Q155 15 102 15 Z M62 90 L62 33 L97 33 Q130 33 130 61.5 Q130 90 97 90 Z" 
+        stroke="#ffffff" stroke-width="2" fill="none" opacity="0.5"
+        stroke-dasharray="8 4"/>
+  <!-- Solid P -->
+  <path d="M50 22 L50 178 L72 178 L72 105 L105 105 Q152 105 152 63.5 Q152 22 105 22 Z M72 88 L72 39 L100 39 Q127 39 127 63.5 Q127 88 100 88 Z" 
+        fill="url(#warmGrad1)"/>
+  <!-- Scan lines overlay -->
+  <rect width="200" height="200" fill="url(#hLines1)" opacity="0.4"/>
+</svg>
