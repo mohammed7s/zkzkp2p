@@ -9,8 +9,6 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@aztec/accounts": "^2.1.9",
-    "@aztec/aztec.js": "^2.1.9",
     "next": "16.1.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",

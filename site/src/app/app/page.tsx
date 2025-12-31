@@ -271,5 +271,5 @@ export default function AppPage() {
     return <ConnectWallet onConnect={handleConnect} connected={false} />;
   }
 
-  return <Dashboard address={wallet.address} onDisconnect={disconnect} />;
+  return <Dashboard address={wallet.address!} onDisconnect={disconnect} />;
 }
