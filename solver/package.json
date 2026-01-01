@@ -1,0 +1,32 @@
+{
+  "name": "zkzkp2p-solver",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Solver service for zkzkp2p providing liquidity between Aztec and Base",
+  "main": "solver.ts",
+  "scripts": {
+    "debug": "tsx solver.ts",
+    "dev": "tsx watch solver.ts",
+    "start": "npx tsx solver.ts 2>/dev/null"
+  },
+  "keywords": ["aztec", "train", "htlc", "solver"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@aztec/accounts": "3.0.0-devnet.5",
+    "@aztec/aztec.js": "3.0.0-devnet.5",
+    "@aztec/bb-prover": "3.0.0-devnet.5",
+    "@aztec/foundation": "3.0.0-devnet.5",
+    "@aztec/kv-store": "3.0.0-devnet.5",
+    "@aztec/noir-contracts.js": "3.0.0-devnet.5",
+    "@aztec/pxe": "3.0.0-devnet.5",
+    "@aztec/test-wallet": "3.0.0-devnet.5",
+    "dotenv": "^16.5.0",
+    "ethers": "^6.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3"
+  }
+}
