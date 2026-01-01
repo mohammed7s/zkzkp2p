@@ -2,6 +2,7 @@
 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { ArchitectureDiagram } from './ArchitectureDiagram';
 
 export function MarkdownContent({ content }: { content: string }) {
   return (
@@ -83,6 +84,12 @@ export function MarkdownContent({ content }: { content: string }) {
           td: ({ children }) => (
             <td className="text-gray-300 py-2 px-3 border-r border-[#333] last:border-r-0">{children}</td>
           ),
+          img: ({ src, alt }) => {
+            if (src === '/diagram.svg') {
+              return <ArchitectureDiagram />;
+            }
+            return <img src={src} alt={alt || ''} className="my-6 max-w-full" />;
+          },
         }}
       >
         {content}

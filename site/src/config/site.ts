@@ -10,7 +10,7 @@ export const siteConfig = {
   tagline: 'Fund zkp2p deposits without revealing your identity',
 
   links: {
-    github: 'https://github.com/zkzkp2p/zkzkp2p',
+    github: 'https://github.com/mohammed7s/zkzkp2p',
     docs: '/docs',
     app: '/app',
     zkp2p: 'https://zkp2p.xyz',
@@ -21,6 +21,6 @@ export const siteConfig = {
   nav: [
     { label: 'docs', href: '/docs' },
     { label: 'app', href: '/app' },
-    { label: 'github', href: 'https://github.com/zkzkp2p/zkzkp2p', external: true },
+    { label: 'github', href: 'https://github.com/mohammed7s/zkzkp2p', external: true },
   ] as NavItem[],
 };
