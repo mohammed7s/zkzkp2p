@@ -15,7 +15,7 @@ export const siteConfig = {
     app: '/app',
     zkp2p: 'https://zkp2p.xyz',
     aztec: 'https://aztec.network',
-    train: 'https://github.com/TrainProtocol/contracts',
+    train: 'https://www.train.tech',
   },
 
   nav: [

@@ -20,5 +20,5 @@ Both operations are non-custodial, client-side, and trustless.
 ## Built On
 
 - [Aztec](https://aztec.network) — Privacy L2 for encrypted state
-- [Train Protocol](https://trainprotocol.com) — Cross-chain atomic swaps using HTLC
+- [Train Protocol](https://www.train.tech) — Cross-chain atomic swaps using HTLC
 - [zkp2p](https://zkp2p.xyz) — P2P fiat on/off ramp

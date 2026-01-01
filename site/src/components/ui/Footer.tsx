@@ -13,7 +13,7 @@ export function Footer() {
         </a>
         {' + '}
         <a
-          href="https://train.tech"
+          href="https://www.train.tech"
           target="_blank"
           rel="noopener noreferrer"
           className="hover:text-gray-500"
