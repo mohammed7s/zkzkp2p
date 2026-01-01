@@ -33,7 +33,7 @@ export function Header() {
             docs
           </Link>
           <a
-            href="https://github.com/zkzkp2p/zkzkp2p"
+            href="https://github.com/mohammed7s/zkzkp2p"
             target="_blank"
             rel="noopener noreferrer"
             className="text-gray-500 hover:text-white"
