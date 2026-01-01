@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useAccount, useWalletClient, usePublicClient } from 'wagmi';
 import { useWalletStore } from '@/stores/walletStore';
+import { useFlowStore } from '@/stores/flowStore';
 import {
   parseAmount,
   initDepositFlow,
@@ -14,14 +15,15 @@ import {
 import { redeemOnBase, isHTLCPending, getHTLCDetails, notifySolver, formatTokenAmount } from '@/lib/train/evm';
 import { createZkp2pDeposit, USDC_ADDRESS } from '@/lib/zkp2p/client';
 import { SOLVER_AZTEC_ADDRESS, SOLVER_EVM_ADDRESS } from '@/lib/train/contracts';
+import { TIMING, ZKP2P, isSolverConfigured } from '@/config';
 
 interface CreateDepositProps {
   privateBalance: bigint;
   onRefreshBalances: (force?: boolean) => void;
 }
 
-const PAYMENT_METHODS = ['revolut', 'wise', 'venmo'] as const;
-const CURRENCIES = ['USD', 'EUR', 'GBP'] as const;
+const PAYMENT_METHODS = ZKP2P.paymentMethods;
+const CURRENCIES = ZKP2P.currencies;
 
 // Deposit flow stages
 type DepositStage =
@@ -56,9 +58,9 @@ const STAGE_DETAILS: Record<DepositStage, string> = {
   error: 'see error below',
 };
 
-// Polling configuration
-const SOLVER_POLL_INTERVAL = 5000; // 5 seconds
-const SOLVER_MAX_WAIT = 300000; // 5 minutes
+// Use centralized timing config
+const SOLVER_POLL_INTERVAL = TIMING.solverPollInterval;
+const SOLVER_MAX_WAIT = TIMING.solverMaxWait;
 
 export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepositProps) {
   const [amount, setAmount] = useState('');
@@ -72,9 +74,48 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
   const [baseTxHash, setBaseTxHash] = useState<string | null>(null);
   const [swapId, setSwapId] = useState<string | null>(null);
   const [waitingTime, setWaitingTime] = useState(0);
+  const [hasActiveFlow, setHasActiveFlow] = useState(false);
 
   const flowRef = useRef<DepositFlowState | null>(null);
   const waitingTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Flow store for persistence
+  const {
+    activeDepositFlow,
+    startDepositFlow,
+    updateDepositFlow,
+    completeDepositFlow,
+    failDepositFlow,
+    getActiveDepositFlow,
+    clearActiveFlows,
+  } = useFlowStore();
+
+  // Check for active flow on mount (recovery)
+  useEffect(() => {
+    const savedFlow = getActiveDepositFlow();
+    if (savedFlow && savedFlow.status !== 'COMPLETE' && savedFlow.status !== 'ERROR') {
+      console.log('[Deposit] Found active flow to recover:', savedFlow.swapId, savedFlow.status);
+      setHasActiveFlow(true);
+      flowRef.current = savedFlow;
+      setSwapId(savedFlow.swapId);
+      if (savedFlow.aztecLockTxHash) setAztecTxHash(savedFlow.aztecLockTxHash);
+      if (savedFlow.evmLockTxHash) setBaseTxHash(savedFlow.evmLockTxHash);
+
+      // Map flow status to UI stage
+      const statusToStage: Record<string, DepositStage> = {
+        'GENERATING_SECRET': 'creating_intent',
+        'SETTING_AUTHWIT': 'creating_intent',
+        'LOCKING_AZTEC': 'creating_intent',
+        'WAITING_SOLVER': 'waiting_solver',
+        'REDEEMING_BASE': 'redeeming_base',
+        'CREATING_DEPOSIT': 'depositing_zkp2p',
+      };
+      const recoveredStage = statusToStage[savedFlow.status] || 'idle';
+      if (recoveredStage !== 'idle') {
+        setStage(recoveredStage);
+      }
+    }
+  }, [getActiveDepositFlow]);
 
   // Cleanup timer on unmount
   useEffect(() => {
@@ -93,8 +134,18 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       setSwapId(null);
       setError(null);
       setWaitingTime(0);
+      setHasActiveFlow(false);
     }
   }, [stage]);
+
+  // Handler to dismiss/abandon recovered flow
+  const handleDismissRecovery = useCallback(() => {
+    console.log('[Deposit] User dismissed recovery - clearing active flow');
+    clearActiveFlows();
+    flowRef.current = null;
+    setHasActiveFlow(false);
+    setStage('idle');
+  }, [clearActiveFlows]);
 
   const { address: evmAddress } = useAccount();
   const { aztecCaipAccount, azguardClient, setAztecTxPending } = useWalletStore();
@@ -105,8 +156,8 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
   const hasEnoughBalance = privateBalance >= amountBigInt;
   const canCreate = amount && hasEnoughBalance && evmAddress && walletClient;
 
-  // Check if solver is configured
-  const solverConfigured = SOLVER_AZTEC_ADDRESS && SOLVER_AZTEC_ADDRESS.length > 0;
+  // Check if solver is configured (use centralized config)
+  const solverConfigured = isSolverConfigured();
 
   const handleCreate = async () => {
     if (!azguardClient || !aztecCaipAccount || !evmAddress || !walletClient || !publicClient) {
@@ -158,6 +209,10 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       setSwapId(flow.swapId);
       console.log('[Deposit] Swap ID:', flow.swapId);
 
+      // CRITICAL: Persist flow immediately to prevent secret loss on refresh
+      startDepositFlow(flow);
+      console.log('[Deposit] Flow persisted to storage');
+
       // Step 1: Transfer from private to public (if needed)
       setStage('transferring_public');
       console.log('[Deposit] Step 1: Transferring to public balance...');
@@ -189,6 +244,8 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       );
       console.log('[Deposit] Step 3 COMPLETE: Aztec lock tx:', aztecLockTxHash);
       setAztecTxHash(aztecLockTxHash);
+      // Update store with Aztec lock hash
+      updateDepositFlow({ status: 'LOCKING_AZTEC', aztecLockTxHash });
       // Refresh balances after lock (force=true to bypass pending check)
       onRefreshBalances(true);
 
@@ -204,6 +261,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
 
       // Step 4: Wait for solver to lock on Base
       setStage('waiting_solver');
+      updateDepositFlow({ status: 'WAITING_SOLVER' });
       console.log('[Deposit] Step 4: Waiting for solver to lock on Base...');
       console.log('[Deposit] Swap ID for solver:', flow.swapId);
 
@@ -231,6 +289,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
 
       // Step 5: Redeem on Base
       setStage('redeeming_base');
+      updateDepositFlow({ status: 'REDEEMING_BASE' });
       console.log('[Deposit] Step 5: Redeeming on Base...');
       const redeemTx = await redeemOnBase(
         walletClient,
@@ -241,9 +300,11 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       );
       console.log('[Deposit] Step 5 COMPLETE: Base redeem tx:', redeemTx);
       setBaseTxHash(redeemTx);
+      updateDepositFlow({ evmRedeemTxHash: redeemTx });
 
       // Step 6: Create zkp2p deposit
       setStage('depositing_zkp2p');
+      updateDepositFlow({ status: 'CREATING_DEPOSIT' });
       console.log('[Deposit] Step 6: Creating zkp2p deposit...');
 
       // Calculate min/max intent amounts (e.g., 10% to 100% of deposit)
@@ -266,6 +327,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       // Success!
       console.log('[Deposit] ===== ALL STEPS COMPLETE =====');
       setStage('complete');
+      completeDepositFlow(); // Mark as complete in store
 
       // Reset after showing success
       setTimeout(() => {
@@ -282,8 +344,10 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
 
     } catch (err) {
       console.error('[Deposit] Error:', err);
-      setError(err instanceof Error ? err.message : 'failed to create deposit');
+      const errorMessage = err instanceof Error ? err.message : 'failed to create deposit';
+      setError(errorMessage);
       setStage('error');
+      failDepositFlow(errorMessage); // Mark as failed in store (keeps flow for recovery)
 
       // Clear timer on error
       if (waitingTimerRef.current) {
@@ -300,6 +364,40 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
   return (
     <div className="border border-gray-800 p-6 space-y-6">
       <div className="text-sm text-gray-500 uppercase tracking-wide">create deposit privately</div>
+
+      {/* Active Flow Recovery Banner */}
+      {hasActiveFlow && flowRef.current && (
+        <div className="border border-yellow-600 bg-yellow-900/20 p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <span className="text-yellow-500 text-lg">⚠️</span>
+            <span className="text-yellow-400 font-medium">Active deposit found</span>
+          </div>
+          <div className="text-xs text-gray-400 space-y-1">
+            <div>Swap ID: <span className="text-white font-mono">{flowRef.current.swapId}</span></div>
+            <div>Amount: <span className="text-white">{formatTokenAmount(flowRef.current.amount)} USDC</span></div>
+            <div>Status: <span className="text-yellow-400">{stage}</span></div>
+            {aztecTxHash && <div>Aztec TX: <span className="text-white font-mono text-xs">{aztecTxHash.slice(0, 10)}...</span></div>}
+          </div>
+          <div className="text-xs text-gray-500">
+            Your previous deposit is still in progress. The secrets are saved locally.
+            You can continue or abandon this flow.
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={handleDismissRecovery}
+              className="flex-1 py-2 text-xs border border-gray-700 text-gray-400 hover:border-gray-500 hover:text-white transition-colors"
+            >
+              abandon flow
+            </button>
+            <button
+              onClick={() => setHasActiveFlow(false)}
+              className="flex-1 py-2 text-xs border border-yellow-700 text-yellow-400 hover:border-yellow-500 hover:text-yellow-300 transition-colors"
+            >
+              continue flow
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Solver Status */}
       {!solverConfigured && (

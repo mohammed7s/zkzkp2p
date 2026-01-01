@@ -258,8 +258,7 @@ export async function executeAzguardCall(
 export async function executeAzguardBatch(
   client: AzguardClient,
   account: string,
-  operations: Array<{ contract: string; method: string; args: any[] }>,
-  feeOptions?: AzguardFeeOptions
+  operations: Array<{ contract: string; method: string; args: any[] }>
 ): Promise<string> {
   const callOps: AzguardCallOperation[] = operations.map(op => ({
     kind: 'call' as const,
@@ -272,11 +271,6 @@ export async function executeAzguardBatch(
     kind: 'send_transaction',
     account,
     actions: callOps,
-    // Default to gas estimation with 50% padding if no fee options provided
-    fee: feeOptions ?? {
-      estimateGas: true,
-      estimatedGasPadding: 0.5,
-    },
   };
 
   try {
