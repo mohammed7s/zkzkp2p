@@ -4,6 +4,7 @@
  */
 
 import { AzguardClient } from '@azguardwallet/client';
+import { CHAINS } from '@/config';
 
 // Track registered contracts to avoid duplicate registrations
 const registeredContracts = new Set<string>();
@@ -50,7 +51,35 @@ export async function connectAzguard(): Promise<{
     // Clearing was causing loss of PXE sync state
     const client = await AzguardClient.create();
 
+    // Get wallet info to discover supported chains
+    let supportedChains: string[] = [];
+    try {
+      const walletInfo = await client.getWalletInfo();
+      console.log('[Azguard] Wallet info:', walletInfo);
+      console.log('[Azguard] Wallet version:', walletInfo.version);
+      console.log('[Azguard] Supported chains:', walletInfo.chains);
+      console.log('[Azguard] Current accounts (before connect):', client.accounts);
+
+      // Extract supported chains from wallet info
+      if (walletInfo.chains && Array.isArray(walletInfo.chains)) {
+        supportedChains = walletInfo.chains;
+      }
+    } catch (e) {
+      console.log('[Azguard] Could not get wallet info:', e);
+    }
+
     if (!client.connected) {
+      const configuredChain = `aztec:${CHAINS.aztec.chainId}`;
+
+      // Use supported chains from wallet, or fallback to known devnet chain IDs
+      const chainsToRequest = supportedChains.length > 0
+        ? supportedChains
+        : [configuredChain];
+
+      console.log('[Azguard] Requesting chains:', chainsToRequest);
+
+      // Connect with minimal required permissions first to avoid wallet rejection.
+      // Request additional capabilities as optional permissions.
       await client.connect(
         {
           name: 'zkzkp2p',
@@ -59,8 +88,14 @@ export async function connectAzguard(): Promise<{
         },
         [
           {
-            chains: ['aztec:1674512022'],
-            methods: ['send_transaction', 'aztec_createAuthWit', 'add_private_authwit', 'add_public_authwit', 'call', 'simulate_views', 'register_contract', 'register_token'],
+            chains: chainsToRequest,
+            methods: ['send_transaction', 'add_private_authwit', 'call'],
+          },
+        ],
+        [
+          {
+            chains: chainsToRequest,
+            methods: ['simulate_views', 'register_contract', 'register_token', 'add_public_authwit', 'aztec_createAuthWit'],
           },
         ]
       );
@@ -190,7 +225,7 @@ export async function executeAzguardCall(
 
   try {
     console.log(`[Azguard] Executing ${methodName}... (waiting for user confirmation)`);
-    const results = await (client as any).execute([txOp]);
+    const results = await client.execute([txOp]);
 
     if (!results || results.length === 0 || results[0].status !== 'ok') {
       const errorMsg = results?.[0]?.error || 'Unknown error';
@@ -202,11 +237,11 @@ export async function executeAzguardCall(
         // Register contract (Azguard fetches artifact from network) and retry
         const registerOp: AzguardRegisterContractOperation = {
           kind: 'register_contract',
-          chain: 'aztec:1674512022',
+          chain: `aztec:${CHAINS.aztec.chainId}`,
           address: contractAddress,
         };
 
-        const retryResults = await (client as any).execute([registerOp, txOp]);
+        const retryResults = await client.execute([registerOp, txOp]);
 
         if (!retryResults || retryResults.length < 2) {
           throw new Error('Azguard returned incomplete results after registration');
@@ -235,7 +270,7 @@ export async function executeAzguardCall(
       if (errorMsg.includes('unauthorized') || errorMsg.includes('Assertion failed')) {
         throw new Error(
           `Azguard authwit verification failed. This is likely due to Azguard using wrong chain ID ` +
-          `(11155655 instead of 1674512022) for authwit computation. ` +
+          `(uses different chain ID) for authwit computation. ` +
           `Please report this to the Azguard team. Original error: ${errorMsg.slice(0, 200)}`
         );
       }
@@ -277,7 +312,7 @@ export async function executeAzguardBatch(
     const methodNames = operations.map(op => op.method).join(' + ');
     console.log(`[Azguard] Executing batch [${methodNames}]... (waiting for user confirmation)`);
 
-    const results = await (client as any).execute([txOp]);
+    const results = await client.execute([txOp]);
 
     if (!results || results.length === 0 || results[0].status !== 'ok') {
       const errorMsg = results?.[0]?.error || 'Unknown error';
@@ -319,7 +354,7 @@ export async function simulateAzguardView(
   try {
     console.log(`[Azguard] Simulating ${methodName}... (timeout: ${timeoutMs / 1000}s)`);
     const results = await withTimeout<any[]>(
-      (client as any).execute([simulateOp]),
+      client.execute([simulateOp]),
       timeoutMs,
       `Azguard view ${methodName}`
     );
@@ -334,11 +369,11 @@ export async function simulateAzguardView(
         // Register contract (Azguard fetches artifact from network) and retry
         const registerOp: AzguardRegisterContractOperation = {
           kind: 'register_contract',
-          chain: 'aztec:1674512022',
+          chain: `aztec:${CHAINS.aztec.chainId}`,
           address: contractAddress,
         };
 
-        const retryResults = await (client as any).execute([registerOp, simulateOp]);
+        const retryResults = await client.execute([registerOp, simulateOp]);
 
         if (!retryResults || retryResults.length < 2) {
           throw new Error('Azguard returned incomplete results after registration');
@@ -398,7 +433,7 @@ export async function registerAzguardToken(
       address: tokenAddress,
     };
 
-    const results = await (client as any).execute([registerOp]);
+    const results = await client.execute([registerOp]);
 
     if (!results || results.length === 0 || results[0].status !== 'ok') {
       const errorMsg = results?.[0]?.error || 'Unknown error';
@@ -434,13 +469,13 @@ export async function registerAzguardContract(
     // Don't pass artifact - Azguard fetches it from the Aztec registry
     const registerOp: AzguardRegisterContractOperation = {
       kind: 'register_contract',
-      chain: 'aztec:1674512022',
+      chain: `aztec:${CHAINS.aztec.chainId}`,
       address: contractAddress,
       // instance and artifact are NOT passed - Azguard fetches them from PXE/node
     };
 
     const results = await withTimeout<any[]>(
-      (client as any).execute([registerOp]),
+      client.execute([registerOp]),
       timeoutMs,
       'Azguard contract registration'
     );
@@ -520,7 +555,7 @@ export async function batchQueryBalances(
     console.log('[Azguard] Operation:', JSON.stringify(simulateOp, null, 2));
 
     const results = await withTimeout<any[]>(
-      (client as any).execute([simulateOp]),
+      client.execute([simulateOp]),
       timeoutMs,
       'Azguard balance query'
     );

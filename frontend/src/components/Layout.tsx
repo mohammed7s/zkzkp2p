@@ -4,15 +4,26 @@ import { useState, useEffect, useCallback } from 'react';
 import { useAccount } from 'wagmi';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { useWalletStore } from '@/stores/walletStore';
-import { getBaseUSDCBalance, formatTokenAmount } from '@/lib/train/evm';
-import { getAztecPrivateBalance, getAztecPublicBalance } from '@/lib/train/deposit';
+import {
+  getBaseUSDCBalance,
+  getAztecPrivateBalance,
+  getAztecPublicBalance,
+  formatTokenAmount,
+  TOKENS,
+} from '@/lib/bridge';
 import { usePublicClient } from 'wagmi';
-import { BASE_TOKEN_ADDRESS, AZTEC_TOKEN_ADDRESS } from '@/lib/train/contracts';
 import { CreateDeposit } from './CreateDeposit';
 import { PrivateAccount } from './PrivateAccount';
 
 const DOCS_URL = 'https://docs.aztec.network';
-const BALANCE_CACHE_KEY = 'zkzkp2p-balance-cache';
+const BALANCE_CACHE_PREFIX = 'zkzkp2p-balance-cache';
+
+function getBalanceCacheKey(aztecAccount?: string | null, evmAddress?: string | null): string | null {
+  if (!aztecAccount && !evmAddress) return null;
+  const aztecKey = aztecAccount ? aztecAccount.toLowerCase() : 'none';
+  const evmKey = evmAddress ? evmAddress.toLowerCase() : 'none';
+  return `${BALANCE_CACHE_PREFIX}:${aztecKey}:${evmKey}`;
+}
 
 function shortenAddress(address: string, chars = 4): string {
   if (!address) return '';
@@ -43,20 +54,36 @@ export function Layout() {
 
   useEffect(() => {
     setMounted(true);
-    // Load cached balances immediately on mount
+  }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+
+    const cacheKey = getBalanceCacheKey(aztecCaipAccount, evmAddress);
+    if (!cacheKey) {
+      setPrivateBalance(0n);
+      setPublicBalance(0n);
+      setBaseBalance(0n);
+      return;
+    }
+
     try {
-      const cached = localStorage.getItem(BALANCE_CACHE_KEY);
+      const cached = localStorage.getItem(cacheKey);
       if (cached) {
         const { privateBalance: priv, publicBalance: pub, baseBalance: base } = JSON.parse(cached);
         if (priv) setPrivateBalance(BigInt(priv));
         if (pub) setPublicBalance(BigInt(pub));
         if (base) setBaseBalance(BigInt(base));
         console.log('[Layout] Loaded cached balances');
+      } else {
+        setPrivateBalance(0n);
+        setPublicBalance(0n);
+        setBaseBalance(0n);
       }
     } catch (e) {
       console.error('[Layout] Failed to load cached balances:', e);
     }
-  }, []);
+  }, [mounted, aztecCaipAccount, evmAddress]);
 
   // Fetch balances SEQUENTIALLY to prevent Azguard IDB conflicts
   // Skip if a tx is pending - Azguard has IDB issues with concurrent operations
@@ -74,7 +101,7 @@ export function Layout() {
 
     try {
       // Base balance (fast - direct RPC, can run independently)
-      if (publicClient && evmAddress && BASE_TOKEN_ADDRESS) {
+      if (publicClient && evmAddress && TOKENS.base.address) {
         try {
           const bal = await getBaseUSDCBalance(publicClient, evmAddress);
           setBaseBalance(bal);
@@ -85,7 +112,7 @@ export function Layout() {
       }
 
       // Aztec balances - use SEPARATE calls (original working approach)
-      if (azguardClient && aztecCaipAccount && AZTEC_TOKEN_ADDRESS) {
+      if (azguardClient && aztecCaipAccount && TOKENS.aztec.address) {
         // First: private balance
         try {
           console.log('[Layout] Fetching private balance...');
@@ -120,9 +147,12 @@ export function Layout() {
       // Cache the balances for next page load
       if (Object.keys(newBalances).length > 0) {
         try {
-          const existing = localStorage.getItem(BALANCE_CACHE_KEY);
+          const cacheKey = getBalanceCacheKey(aztecCaipAccount, evmAddress);
+          if (!cacheKey) return;
+
+          const existing = localStorage.getItem(cacheKey);
           const cached = existing ? JSON.parse(existing) : {};
-          localStorage.setItem(BALANCE_CACHE_KEY, JSON.stringify({ ...cached, ...newBalances }));
+          localStorage.setItem(cacheKey, JSON.stringify({ ...cached, ...newBalances }));
         } catch (e) {
           console.error('[Layout] Failed to cache balances:', e);
         }

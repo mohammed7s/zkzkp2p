@@ -1,68 +1,59 @@
 /**
  * Flow State Store
  * Manages shield and deposit flows with localStorage persistence for recovery
+ * Updated for Substance Labs bridge integration
  */
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { ShieldFlowState, ShieldStatus } from '../lib/train/shield';
-import type { DepositFlowState, DepositStatus } from '../lib/train/deposit';
+import type { BridgeFlowState, BridgeStatus, BridgeDirection } from '../lib/bridge/types';
 
 // ==================== SERIALIZABLE STATE ====================
 
-// Store secrets as strings for JSON serialization
-interface SerializedShieldFlow {
-  status: ShieldStatus;
-  swapId: string;
+// Store bigints as strings for JSON serialization
+interface SerializedBridgeFlow {
+  direction: BridgeDirection;
+  status: BridgeStatus;
+  orderId?: string;
   amount: string; // bigint as string
-  secretHigh: string;
-  secretLow: string;
-  hashlockHigh: string;
-  hashlockLow: string;
-  baseLockTxHash?: string;
-  aztecLockTxHash?: string;
-  aztecRedeemTxHash?: string;
-  error?: string;
-  createdAt: number;
-}
-
-interface SerializedDepositFlow {
-  status: DepositStatus;
-  swapId: string;
-  amount: string;
-  secretHigh: string;
-  secretLow: string;
-  hashlockHigh: string;
-  hashlockLow: string;
-  aztecLockTxHash?: string;
-  evmLockTxHash?: string;
-  evmRedeemTxHash?: string;
+  secret?: {
+    value: string;
+    hash: string;
+  };
+  txHashes: {
+    open?: string;
+    fill?: string;
+    claim?: string;
+    refund?: string;
+  };
+  // Additional context for zkp2p
   zkp2pDepositId?: string;
   error?: string;
   createdAt: number;
+  updatedAt: number;
 }
 
 // ==================== STORE STATE ====================
 
 interface FlowState {
   // Active flows (one of each type at a time)
-  activeShieldFlow: SerializedShieldFlow | null;
-  activeDepositFlow: SerializedDepositFlow | null;
+  activeShieldFlow: SerializedBridgeFlow | null;  // base_to_aztec
+  activeDepositFlow: SerializedBridgeFlow | null; // aztec_to_base
 
   // Flow history (completed or failed)
-  completedFlows: (SerializedShieldFlow | SerializedDepositFlow)[];
+  completedFlows: SerializedBridgeFlow[];
 
   // UI state
   isExecuting: boolean;
 
   // Actions
-  startShieldFlow: (flow: ShieldFlowState) => void;
-  updateShieldFlow: (updates: Partial<ShieldFlowState>) => void;
+  startShieldFlow: (flow: BridgeFlowState) => void;
+  updateShieldFlow: (updates: Partial<BridgeFlowState>) => void;
   completeShieldFlow: () => void;
   failShieldFlow: (error: string) => void;
 
-  startDepositFlow: (flow: DepositFlowState) => void;
-  updateDepositFlow: (updates: Partial<DepositFlowState>) => void;
+  startDepositFlow: (flow: BridgeFlowState & { zkp2pDepositId?: string }) => void;
+  updateDepositFlow: (updates: Partial<BridgeFlowState> & { zkp2pDepositId?: string }) => void;
   completeDepositFlow: () => void;
   failDepositFlow: (error: string) => void;
 
@@ -70,66 +61,43 @@ interface FlowState {
   clearActiveFlows: () => void;
 
   // Recovery helpers
-  getActiveShieldFlow: () => ShieldFlowState | null;
-  getActiveDepositFlow: () => DepositFlowState | null;
+  getActiveShieldFlow: () => (BridgeFlowState & { direction: BridgeDirection }) | null;
+  getActiveDepositFlow: () => (BridgeFlowState & { direction: BridgeDirection; zkp2pDepositId?: string }) | null;
 }
 
 // ==================== SERIALIZATION HELPERS ====================
 
-function serializeShieldFlow(flow: ShieldFlowState): SerializedShieldFlow {
+function serializeBridgeFlow(
+  flow: BridgeFlowState,
+  direction: BridgeDirection,
+  extra?: { zkp2pDepositId?: string }
+): SerializedBridgeFlow {
   return {
-    ...flow,
-    amount: flow.amount.toString(),
-    secretHigh: flow.secretHigh.toString(),
-    secretLow: flow.secretLow.toString(),
-    hashlockHigh: flow.hashlockHigh.toString(),
-    hashlockLow: flow.hashlockLow.toString(),
-    createdAt: Date.now(),
-  };
-}
-
-function deserializeShieldFlow(flow: SerializedShieldFlow): ShieldFlowState {
-  return {
+    direction,
     status: flow.status,
-    swapId: flow.swapId,
-    amount: BigInt(flow.amount),
-    secretHigh: BigInt(flow.secretHigh),
-    secretLow: BigInt(flow.secretLow),
-    hashlockHigh: BigInt(flow.hashlockHigh),
-    hashlockLow: BigInt(flow.hashlockLow),
-    baseLockTxHash: flow.baseLockTxHash,
-    aztecLockTxHash: flow.aztecLockTxHash,
-    aztecRedeemTxHash: flow.aztecRedeemTxHash,
+    orderId: flow.orderId,
+    amount: flow.amount.toString(),
+    secret: flow.secret,
+    txHashes: flow.txHashes,
+    zkp2pDepositId: extra?.zkp2pDepositId,
     error: flow.error,
+    createdAt: flow.createdAt || Date.now(),
+    updatedAt: Date.now(),
   };
 }
 
-function serializeDepositFlow(flow: DepositFlowState): SerializedDepositFlow {
+function deserializeBridgeFlow(flow: SerializedBridgeFlow): BridgeFlowState & { direction: BridgeDirection; zkp2pDepositId?: string } {
   return {
-    ...flow,
-    amount: flow.amount.toString(),
-    secretHigh: flow.secretHigh.toString(),
-    secretLow: flow.secretLow.toString(),
-    hashlockHigh: flow.hashlockHigh.toString(),
-    hashlockLow: flow.hashlockLow.toString(),
-    createdAt: Date.now(),
-  };
-}
-
-function deserializeDepositFlow(flow: SerializedDepositFlow): DepositFlowState {
-  return {
+    direction: flow.direction,
     status: flow.status,
-    swapId: flow.swapId,
+    orderId: flow.orderId,
     amount: BigInt(flow.amount),
-    secretHigh: BigInt(flow.secretHigh),
-    secretLow: BigInt(flow.secretLow),
-    hashlockHigh: BigInt(flow.hashlockHigh),
-    hashlockLow: BigInt(flow.hashlockLow),
-    aztecLockTxHash: flow.aztecLockTxHash,
-    evmLockTxHash: flow.evmLockTxHash,
-    evmRedeemTxHash: flow.evmRedeemTxHash,
+    secret: flow.secret,
+    txHashes: flow.txHashes,
     zkp2pDepositId: flow.zkp2pDepositId,
     error: flow.error,
+    createdAt: flow.createdAt,
+    updatedAt: flow.updatedAt,
   };
 }
 
@@ -144,22 +112,31 @@ export const useFlowStore = create<FlowState>()(
       completedFlows: [],
       isExecuting: false,
 
-      // Shield flow actions
-      startShieldFlow: (flow: ShieldFlowState) => {
+      // Shield flow actions (Base → Aztec)
+      startShieldFlow: (flow: BridgeFlowState) => {
         set({
-          activeShieldFlow: serializeShieldFlow(flow),
+          activeShieldFlow: serializeBridgeFlow(flow, 'base_to_aztec'),
           isExecuting: true,
         });
       },
 
-      updateShieldFlow: (updates: Partial<ShieldFlowState>) => {
+      updateShieldFlow: (updates: Partial<BridgeFlowState>) => {
         const current = get().activeShieldFlow;
         if (!current) return;
 
-        const currentFlow = deserializeShieldFlow(current);
-        const updatedFlow = { ...currentFlow, ...updates };
+        const currentFlow = deserializeBridgeFlow(current);
+        const updatedFlow: BridgeFlowState = {
+          status: updates.status ?? currentFlow.status,
+          orderId: updates.orderId ?? currentFlow.orderId,
+          amount: updates.amount ?? currentFlow.amount,
+          secret: updates.secret ?? currentFlow.secret,
+          txHashes: { ...currentFlow.txHashes, ...updates.txHashes },
+          error: updates.error ?? currentFlow.error,
+          createdAt: currentFlow.createdAt,
+          updatedAt: Date.now(),
+        };
         set({
-          activeShieldFlow: serializeShieldFlow(updatedFlow),
+          activeShieldFlow: serializeBridgeFlow(updatedFlow, 'base_to_aztec'),
         });
       },
 
@@ -168,7 +145,7 @@ export const useFlowStore = create<FlowState>()(
         if (current) {
           set((state) => ({
             activeShieldFlow: null,
-            completedFlows: [...state.completedFlows, { ...current, status: 'COMPLETE' as ShieldStatus }],
+            completedFlows: [...state.completedFlows, { ...current, status: 'completed' as BridgeStatus, updatedAt: Date.now() }],
             isExecuting: false,
           }));
         }
@@ -177,29 +154,40 @@ export const useFlowStore = create<FlowState>()(
       failShieldFlow: (error: string) => {
         const current = get().activeShieldFlow;
         if (current) {
-          set((state) => ({
-            activeShieldFlow: { ...current, status: 'ERROR' as ShieldStatus, error },
+          set({
+            activeShieldFlow: { ...current, status: 'error' as BridgeStatus, error, updatedAt: Date.now() },
             isExecuting: false,
-          }));
+          });
         }
       },
 
-      // Deposit flow actions
-      startDepositFlow: (flow: DepositFlowState) => {
+      // Deposit flow actions (Aztec → Base)
+      startDepositFlow: (flow: BridgeFlowState & { zkp2pDepositId?: string }) => {
         set({
-          activeDepositFlow: serializeDepositFlow(flow),
+          activeDepositFlow: serializeBridgeFlow(flow, 'aztec_to_base', { zkp2pDepositId: flow.zkp2pDepositId }),
           isExecuting: true,
         });
       },
 
-      updateDepositFlow: (updates: Partial<DepositFlowState>) => {
+      updateDepositFlow: (updates: Partial<BridgeFlowState> & { zkp2pDepositId?: string }) => {
         const current = get().activeDepositFlow;
         if (!current) return;
 
-        const currentFlow = deserializeDepositFlow(current);
-        const updatedFlow = { ...currentFlow, ...updates };
+        const currentFlow = deserializeBridgeFlow(current);
+        const updatedFlow: BridgeFlowState = {
+          status: updates.status ?? currentFlow.status,
+          orderId: updates.orderId ?? currentFlow.orderId,
+          amount: updates.amount ?? currentFlow.amount,
+          secret: updates.secret ?? currentFlow.secret,
+          txHashes: { ...currentFlow.txHashes, ...updates.txHashes },
+          error: updates.error ?? currentFlow.error,
+          createdAt: currentFlow.createdAt,
+          updatedAt: Date.now(),
+        };
         set({
-          activeDepositFlow: serializeDepositFlow(updatedFlow),
+          activeDepositFlow: serializeBridgeFlow(updatedFlow, 'aztec_to_base', {
+            zkp2pDepositId: updates.zkp2pDepositId ?? currentFlow.zkp2pDepositId,
+          }),
         });
       },
 
@@ -208,7 +196,7 @@ export const useFlowStore = create<FlowState>()(
         if (current) {
           set((state) => ({
             activeDepositFlow: null,
-            completedFlows: [...state.completedFlows, { ...current, status: 'COMPLETE' as DepositStatus }],
+            completedFlows: [...state.completedFlows, { ...current, status: 'completed' as BridgeStatus, updatedAt: Date.now() }],
             isExecuting: false,
           }));
         }
@@ -217,10 +205,10 @@ export const useFlowStore = create<FlowState>()(
       failDepositFlow: (error: string) => {
         const current = get().activeDepositFlow;
         if (current) {
-          set((state) => ({
-            activeDepositFlow: { ...current, status: 'ERROR' as DepositStatus, error },
+          set({
+            activeDepositFlow: { ...current, status: 'error' as BridgeStatus, error, updatedAt: Date.now() },
             isExecuting: false,
-          }));
+          });
         }
       },
 
@@ -237,12 +225,12 @@ export const useFlowStore = create<FlowState>()(
       // Recovery helpers
       getActiveShieldFlow: () => {
         const flow = get().activeShieldFlow;
-        return flow ? deserializeShieldFlow(flow) : null;
+        return flow ? deserializeBridgeFlow(flow) : null;
       },
 
       getActiveDepositFlow: () => {
         const flow = get().activeDepositFlow;
-        return flow ? deserializeDepositFlow(flow) : null;
+        return flow ? deserializeBridgeFlow(flow) : null;
       },
     }),
     {

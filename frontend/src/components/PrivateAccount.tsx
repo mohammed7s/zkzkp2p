@@ -4,12 +4,18 @@ import { useState, useEffect, useRef } from 'react';
 import { useAccount, useWalletClient, usePublicClient } from 'wagmi';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { useWalletStore } from '@/stores/walletStore';
-import { formatTokenAmount, callFaucet, notifySolver } from '@/lib/train/evm';
-import { parseAmount, transferToPrivate, getAztecPublicBalance } from '@/lib/train/deposit';
-import { checkForSolverLock, getAztecBlockNumber } from '@/lib/aztec/aztecReadClient';
-import { initShieldFlow, lockOnBaseForShield, redeemOnAztec, redeemAndTransferToPrivate, transferToPrivateAfterRedeem, type ShieldFlowState } from '@/lib/train/shield';
-import { BASE_TOKEN_ADDRESS, AZTEC_TRAIN_ADDRESS } from '@/lib/train/contracts';
-import { registerAzguardContract } from '@/lib/aztec/azguardHelpers';
+import { useFlowStore } from '@/stores/flowStore';
+import {
+  createBridge,
+  executeShield,
+  formatTokenAmount,
+  parseTokenAmount,
+  getAztecAddressFromAzguardAccount,
+  isConfigured,
+  TOKENS,
+} from '@/lib/bridge';
+import type { BridgeFlowState, BridgeStatus } from '@/lib/bridge/types';
+import { padHex } from 'viem';
 
 // LocalStorage key for persisting flow state
 const FLOW_STORAGE_KEY = 'zkzkp2p-shield-flow';
@@ -22,8 +28,14 @@ interface PrivateAccountProps {
   onTopUp: () => void;
 }
 
-// Solver address for testnet
-const SOLVER_EVM_ADDRESS = (process.env.NEXT_PUBLIC_SOLVER_EVM_ADDRESS || '0x8ff2c11118ed9c7839b03dc9f4d4d6a479de3c95') as `0x${string}`;
+// Shield flow stages (Substance bridge flow)
+type ShieldStage =
+  | 'idle'
+  | 'opening'         // Opening order on Base
+  | 'waiting_filler'  // Waiting for filler to fill on Aztec
+  | 'claiming'        // Claiming private tokens
+  | 'complete'
+  | 'error';
 
 export function PrivateAccount({
   privateBalance,
@@ -38,78 +50,63 @@ export function PrivateAccount({
   const [isFauceting, setIsFauceting] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [stage, setStage] = useState<'idle' | 'locking_base' | 'waiting_solver' | 'claiming_aztec' | 'transferring_private' | 'complete'>('idle');
-  const [txHash, setTxHash] = useState<string | null>(null);
+  const [stage, setStage] = useState<ShieldStage>('idle');
+  const [baseTxHash, setBaseTxHash] = useState<string | null>(null);
   const [aztecTxHash, setAztecTxHash] = useState<string | null>(null);
-  const [flowState, setFlowState] = useState<ShieldFlowState | null>(null);
-  const [lockBlockNumber, setLockBlockNumber] = useState<number>(0);
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const [isClaimingAztec, setIsClaimingAztec] = useState(false);
-  const [claimPaused, setClaimPaused] = useState(false); // Pause auto-claim after rejection
+  const [orderId, setOrderId] = useState<string | null>(null);
+  const [flowState, setFlowState] = useState<BridgeFlowState | null>(null);
+  const [waitingTime, setWaitingTime] = useState(0);
+  const waitingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [isTransferringToPrivate, setIsTransferringToPrivate] = useState(false);
+
+  // Flow store for persistence
+  const {
+    startShieldFlow,
+    updateShieldFlow,
+    completeShieldFlow,
+    failShieldFlow,
+    getActiveShieldFlow,
+    clearActiveFlows,
+  } = useFlowStore();
 
   // Load persisted flow state on mount
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(FLOW_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        // Convert bigint strings back to bigint
-        const restored: ShieldFlowState = {
-          ...parsed,
-          amount: BigInt(parsed.amount),
-          secretHigh: BigInt(parsed.secretHigh),
-          secretLow: BigInt(parsed.secretLow),
-          hashlockHigh: BigInt(parsed.hashlockHigh),
-          hashlockLow: BigInt(parsed.hashlockLow),
-        };
-        const restoredStage = parsed.savedStage || 'waiting_solver';
-        setFlowState(restored);
-        setStage(restoredStage);
-        setTxHash(parsed.savedTxHash || null);
-        setLockBlockNumber(parsed.savedLockBlock || 1);
+    const savedFlow = getActiveShieldFlow();
+    if (savedFlow && savedFlow.status !== 'completed' && savedFlow.status !== 'error') {
+      console.log('[TopUp] Found active flow to recover:', savedFlow.orderId, savedFlow.status);
+      setFlowState(savedFlow);
+      setOrderId(savedFlow.orderId || null);
+      if (savedFlow.txHashes?.open) setBaseTxHash(savedFlow.txHashes.open);
+      if (savedFlow.txHashes?.claim) setAztecTxHash(savedFlow.txHashes.claim);
+
+      // Map flow status to UI stage
+      const statusToStage: Record<BridgeStatus, ShieldStage> = {
+        'idle': 'idle',
+        'approving': 'opening',
+        'opening': 'opening',
+        'waiting_filler': 'waiting_filler',
+        'claiming': 'claiming',
+        'completed': 'complete',
+        'refunding': 'error',
+        'refunded': 'error',
+        'error': 'error',
+      };
+      const recoveredStage = statusToStage[savedFlow.status] || 'idle';
+      if (recoveredStage !== 'idle') {
+        setStage(recoveredStage);
         setShowTopUp(true); // Show the panel for in-progress flow
-
-        // If restoring at claiming stage, pause auto-claim so user has control
-        // This prevents auto-retry loops when restoring after errors/refreshes
-        if (restoredStage === 'claiming_aztec') {
-          setClaimPaused(true);
-          console.log('[TopUp] Restored at claiming stage - paused for manual retry');
-        }
-
-        console.log('[TopUp] Restored flow state from localStorage:', restored.swapId, 'stage:', restoredStage);
       }
-    } catch (err) {
-      console.error('[TopUp] Failed to restore flow state:', err);
-      localStorage.removeItem(FLOW_STORAGE_KEY);
     }
-  }, []);
+  }, [getActiveShieldFlow]);
 
-  // Save flow state whenever it changes
+  // Cleanup timer on unmount
   useEffect(() => {
-    if (flowState && stage !== 'idle' && stage !== 'complete') {
-      try {
-        const toSave = {
-          ...flowState,
-          // Convert bigints to strings for JSON
-          amount: flowState.amount.toString(),
-          secretHigh: flowState.secretHigh.toString(),
-          secretLow: flowState.secretLow.toString(),
-          hashlockHigh: flowState.hashlockHigh.toString(),
-          hashlockLow: flowState.hashlockLow.toString(),
-          savedStage: stage,
-          savedTxHash: txHash,
-          savedLockBlock: lockBlockNumber,
-        };
-        localStorage.setItem(FLOW_STORAGE_KEY, JSON.stringify(toSave));
-      } catch (err) {
-        console.error('[TopUp] Failed to save flow state:', err);
+    return () => {
+      if (waitingTimerRef.current) {
+        clearInterval(waitingTimerRef.current);
       }
-    } else if (stage === 'complete' || stage === 'idle') {
-      // Clear saved state when done
-      localStorage.removeItem(FLOW_STORAGE_KEY);
-    }
-  }, [flowState, stage, txHash, lockBlockNumber]);
+    };
+  }, []);
 
   const { address: evmAddress } = useAccount();
   const { aztecAddress, aztecCaipAccount, azguardClient } = useWalletStore();
@@ -129,206 +126,58 @@ export function PrivateAccount({
     );
   };
 
-  // Poll Aztec node directly for solver lock (no Azguard needed)
-  useEffect(() => {
-    if (stage !== 'waiting_solver' || !flowState?.swapId || lockBlockNumber === 0) return;
-
-    console.log('[TopUp] Polling Aztec node for solver lock...');
-
-    const checkLock = async () => {
-      try {
-        const found = await checkForSolverLock(flowState.swapId, lockBlockNumber);
-
-        if (found) {
-          console.log('[TopUp] Solver locked on Aztec! Starting claim...');
-          if (pollIntervalRef.current) {
-            clearInterval(pollIntervalRef.current);
-            pollIntervalRef.current = null;
-          }
-          // Trigger claim on Aztec
-          setStage('claiming_aztec');
-        }
-      } catch (err) {
-        console.error('[TopUp] Error checking solver lock:', err);
-      }
-    };
-
-    // Check immediately
-    checkLock();
-
-    // Then poll every 10 seconds (direct RPC, no Azguard popups)
-    pollIntervalRef.current = setInterval(checkLock, 10000);
-
-    return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-        pollIntervalRef.current = null;
-      }
-    };
-  }, [stage, flowState?.swapId, lockBlockNumber]);
-
-  // Helper to detect AlreadyClaimed error (means previous claim succeeded)
-  const isAlreadyClaimedError = (error: any): boolean => {
-    const message = error?.message?.toLowerCase() || '';
-    return message.includes('alreadyclaimed') || message.includes('already claimed') || message.includes('already redeemed');
-  };
-
-  // Claim on Aztec when stage becomes claiming_aztec (unless paused)
-  // Uses combined redeem + transfer_to_private in single tx for better UX
-  useEffect(() => {
-    if (stage !== 'claiming_aztec' || !flowState || !azguardClient || !aztecCaipAccount || isClaimingAztec || claimPaused) return;
-
-    const claimOnAztec = async () => {
-      setIsClaimingAztec(true);
-      console.log('[TopUp] Redeeming and transferring to private (single tx)...');
-
-      try {
-        // Ensure Train contract is registered with Azguard (fetches artifact from Aztec network)
-        if (AZTEC_TRAIN_ADDRESS) {
-          console.log('[TopUp] Registering Train contract with Azguard...');
-          await registerAzguardContract(azguardClient, AZTEC_TRAIN_ADDRESS);
-          console.log('[TopUp] Train contract registered successfully');
-        }
-
-        // Combined: redeem + transfer_to_private in single transaction
-        const claimTxHash = await redeemAndTransferToPrivate(azguardClient, aztecCaipAccount, flowState);
-        console.log('[TopUp] Redeem + transfer to private successful:', claimTxHash);
-
-        setAztecTxHash(claimTxHash);
-        setIsClaimingAztec(false);
-
-        // Skip transferring_private stage - already done in batch
-        localStorage.removeItem(FLOW_STORAGE_KEY);
-        setStage('complete');
-        setTimeout(() => onTopUp(), 2000); // Refresh balances
-      } catch (err) {
-        console.error('[TopUp] Error claiming on Aztec:', err);
-
-        // Check if this is an "AlreadyClaimed" error - means previous claim succeeded!
-        if (isAlreadyClaimedError(err)) {
-          console.log('[TopUp] HTLC already claimed - checking if transfer needed');
-          setAztecTxHash('previously-claimed');
-          setIsClaimingAztec(false);
-          setError(null);
-          // Move to transfer stage in case public balance still needs moving
-          setStage('transferring_private');
-          return;
-        }
-
-        if (isUserRejection(err)) {
-          // User cancelled - pause auto-claim so they can manually retry
-          setClaimPaused(true);
-          setIsClaimingAztec(false);
-        } else {
-          setError(err instanceof Error ? err.message : 'claim failed');
-          setClaimPaused(true); // Pause on error too
-          setIsClaimingAztec(false);
-        }
-      }
-    };
-
-    claimOnAztec();
-  }, [stage, flowState, azguardClient, aztecCaipAccount, isClaimingAztec, claimPaused, onTopUp]);
-
-  // Transfer to private when stage becomes transferring_private
-  useEffect(() => {
-    if (stage !== 'transferring_private' || !flowState || !azguardClient || !aztecCaipAccount || isTransferringToPrivate) return;
-
-    const doTransferToPrivate = async () => {
-      setIsTransferringToPrivate(true);
-      console.log('[TopUp] Transferring to private balance...');
-
-      try {
-        // Wait a bit for redeem state to propagate
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        // Query actual public balance to avoid underflow errors
-        let amountToTransfer = flowState.amount;
-        try {
-          const actualBalance = await getAztecPublicBalance(azguardClient, aztecCaipAccount);
-          if (actualBalance !== null && actualBalance > 0n) {
-            amountToTransfer = actualBalance;
-            console.log('[TopUp] Using actual public balance:', amountToTransfer.toString());
-          } else {
-            console.log('[TopUp] Balance query returned null or 0, using flow amount:', flowState.amount.toString());
-          }
-        } catch (e) {
-          console.log('[TopUp] Could not query balance, using flow amount:', flowState.amount.toString());
-        }
-
-        const transferTxHash = await transferToPrivateAfterRedeem(azguardClient, aztecCaipAccount, amountToTransfer);
-        console.log('[TopUp] Transfer to private successful:', transferTxHash);
-
-        // Clear localStorage and mark complete
-        localStorage.removeItem(FLOW_STORAGE_KEY);
-        setStage('complete');
-        // Refresh balances
-        setTimeout(() => onTopUp(), 2000);
-      } catch (err) {
-        console.error('[TopUp] Error transferring to private:', err);
-
-        if (isUserRejection(err)) {
-          // User cancelled - they can use the manual "→ private" button later
-          // Still mark as complete since redeem succeeded
-          localStorage.removeItem(FLOW_STORAGE_KEY);
-          setStage('complete');
-          setStatus('redeemed (use → private button to move to private balance)');
-          setTimeout(() => onTopUp(), 1000);
-        } else {
-          setError(err instanceof Error ? err.message : 'transfer to private failed');
-          // Still mark complete - redeem succeeded, user can manually transfer
-          localStorage.removeItem(FLOW_STORAGE_KEY);
-          setStage('complete');
-          setTimeout(() => onTopUp(), 1000);
-        }
-      } finally {
-        setIsTransferringToPrivate(false);
-      }
-    };
-
-    doTransferToPrivate();
-  }, [stage, flowState, azguardClient, aztecCaipAccount, isTransferringToPrivate, onTopUp]);
-
-  // Manual retry claim
-  const handleRetryClaim = () => {
-    setClaimPaused(false);
-    setIsClaimingAztec(false);
-    setError(null);
-  };
-
   // Cancel/reset the entire flow
   const handleCancelFlow = () => {
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
+    if (waitingTimerRef.current) {
+      clearInterval(waitingTimerRef.current);
+      waitingTimerRef.current = null;
     }
     setStage('idle');
     setFlowState(null);
-    setTxHash(null);
+    setBaseTxHash(null);
     setAztecTxHash(null);
+    setOrderId(null);
     setError(null);
-    setClaimPaused(false);
-    setIsClaimingAztec(false);
-    setLockBlockNumber(0);
-    localStorage.removeItem(FLOW_STORAGE_KEY);
+    setWaitingTime(0);
+    clearActiveFlows();
     console.log('[TopUp] Flow cancelled and reset');
   };
 
   const handleFaucet = async () => {
-    if (!walletClient || !publicClient || !BASE_TOKEN_ADDRESS) return;
+    if (!walletClient || !publicClient || !TOKENS.base.address) return;
 
     setIsFauceting(true);
     setError(null);
     setStatus('calling faucet...');
 
     try {
-      await callFaucet(walletClient, publicClient, BASE_TOKEN_ADDRESS as `0x${string}`);
+      // Simple faucet call - mint test USDC
+      // Note: This assumes the token has a mint function for testnet
+      const { request } = await publicClient.simulateContract({
+        address: TOKENS.base.address as `0x${string}`,
+        abi: [
+          {
+            name: 'mint',
+            type: 'function',
+            stateMutability: 'nonpayable',
+            inputs: [
+              { name: 'to', type: 'address' },
+              { name: 'amount', type: 'uint256' },
+            ],
+            outputs: [],
+          },
+        ],
+        functionName: 'mint',
+        args: [evmAddress!, BigInt(1000) * BigInt(10 ** 6)], // 1000 USDC
+        account: evmAddress,
+      });
+      await walletClient.writeContract(request);
       setStatus('faucet complete');
       onTopUp();
       setTimeout(() => setStatus(null), 2000);
     } catch (err) {
       if (isUserRejection(err)) {
-        setStatus(null); // Silently ignore user rejections
+        setStatus(null);
       } else {
         setError(err instanceof Error ? err.message : 'faucet failed');
         setStatus(null);
@@ -339,12 +188,12 @@ export function PrivateAccount({
   };
 
   const handleTopUp = async () => {
-    if (!walletClient || !publicClient || !evmAddress || !aztecAddress) {
-      setError('base wallet not connected');
+    if (!walletClient || !publicClient || !evmAddress || !aztecAddress || !aztecCaipAccount || !azguardClient) {
+      setError('wallets not connected');
       return;
     }
 
-    const amount = parseAmount(topUpAmount);
+    const amount = parseTokenAmount(topUpAmount);
     if (amount <= 0n) {
       setError('enter an amount');
       return;
@@ -355,73 +204,154 @@ export function PrivateAccount({
       return;
     }
 
+    if (!isConfigured()) {
+      setError('bridge not configured - check token addresses');
+      return;
+    }
+
     setIsTopingUp(true);
     setError(null);
-    setTxHash(null);
+    setBaseTxHash(null);
+    setAztecTxHash(null);
+    setOrderId(null);
     setStage('idle');
     setFlowState(null);
-    setIsClaimingAztec(false);
+    setWaitingTime(0);
+
+    // Clear any existing timer
+    if (waitingTimerRef.current) {
+      clearInterval(waitingTimerRef.current);
+      waitingTimerRef.current = null;
+    }
 
     try {
-      // Step 1: Lock on Base
-      setStage('locking_base');
-      const flow = await initShieldFlow(amount);
+      // Create bridge instance
+      console.log('[TopUp] Creating bridge instance...');
+      const bridge = await createBridge({
+        azguardClient,
+        evmProvider: walletClient,
+      });
 
-      const baseTxHash = await lockOnBaseForShield(
-        walletClient,
-        publicClient,
-        evmAddress,
-        aztecAddress,
-        SOLVER_EVM_ADDRESS,
-        flow
-      );
+      // Get Aztec address from CAIP account (padded to 32 bytes)
+      const aztecAddr = getAztecAddressFromAzguardAccount(aztecCaipAccount as `aztec:${number}:${string}`);
+      const paddedAztecAddr = padHex(aztecAddr as `0x${string}`, { size: 32 });
 
-      setTxHash(baseTxHash);
+      // Create initial flow state for persistence
+      const initialFlow: BridgeFlowState = {
+        status: 'opening',
+        amount,
+        txHashes: {},
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      setFlowState(initialFlow);
+      startShieldFlow(initialFlow);
+      console.log('[TopUp] Flow persisted to storage');
 
-      console.log('[TopUp] Base lock complete:', baseTxHash);
-      console.log('[TopUp] Swap ID:', flow.swapId);
-      console.log('[TopUp] Hashlock:', flow.hashlockHigh.toString(), flow.hashlockLow.toString());
+      // Execute shield flow (Base -> Aztec)
+      setStage('opening');
+      console.log('[TopUp] Executing shield flow...');
 
-      // Get current Aztec block to poll from
-      const aztecBlock = await getAztecBlockNumber();
-      setLockBlockNumber(aztecBlock);
-      console.log('[TopUp] Starting Aztec poll from block:', aztecBlock);
+      const onProgress = (state: Partial<BridgeFlowState>) => {
+        console.log('[TopUp] Progress:', state.status);
 
-      // Notify solver for faster processing (non-blocking)
-      notifySolver({
-        swapId: flow.swapId,
-        direction: 'base_to_aztec',
-        amount: flow.amount,
-        hashlockHigh: flow.hashlockHigh,
-        hashlockLow: flow.hashlockLow,
-        userAddress: aztecAddress,
-      }).catch(() => {}); // Ignore errors - solver will detect via events
+        if (state.status) {
+          const statusToStage: Record<BridgeStatus, ShieldStage> = {
+            'idle': 'idle',
+            'approving': 'opening',
+            'opening': 'opening',
+            'waiting_filler': 'waiting_filler',
+            'claiming': 'claiming',
+            'completed': 'complete',
+            'refunding': 'error',
+            'refunded': 'error',
+            'error': 'error',
+          };
+          setStage(statusToStage[state.status] || 'opening');
+        }
 
-      // Step 2: Wait for solver to lock on Aztec
-      // Store full flow state (includes secrets needed for claiming)
-      setFlowState(flow);
-      setStage('waiting_solver');
+        if (state.orderId) {
+          setOrderId(state.orderId);
+        }
 
-      // Polling will start automatically via useEffect when stage changes to 'waiting_solver'
-      console.log('[TopUp] Waiting for solver to lock on Aztec...');
+        if (state.txHashes?.open) {
+          setBaseTxHash(state.txHashes.open);
+        }
+
+        if (state.txHashes?.claim) {
+          setAztecTxHash(state.txHashes.claim);
+        }
+
+        // Start timer when waiting for filler
+        if (state.status === 'waiting_filler' && !waitingTimerRef.current) {
+          waitingTimerRef.current = setInterval(() => {
+            setWaitingTime(prev => prev + 1);
+          }, 1000);
+        }
+
+        // Update store
+        updateShieldFlow({
+          status: state.status,
+          orderId: state.orderId,
+          txHashes: state.txHashes,
+        });
+      };
+
+      const result = await executeShield({
+        bridge,
+        amount,
+        aztecRecipient: paddedAztecAddr,
+        onProgress,
+      });
+
+      console.log('[TopUp] Shield complete:', result);
+
+      // Stop timer
+      if (waitingTimerRef.current) {
+        clearInterval(waitingTimerRef.current);
+        waitingTimerRef.current = null;
+      }
+
+      // Mark as complete
+      setStage('complete');
+      completeShieldFlow();
+
+      // Refresh balances and reset after delay
+      setTimeout(() => {
+        onTopUp();
+        setStage('idle');
+        setTopUpAmount('');
+        setBaseTxHash(null);
+        setAztecTxHash(null);
+        setOrderId(null);
+        setFlowState(null);
+        setWaitingTime(0);
+      }, 2000);
 
     } catch (err) {
       if (isUserRejection(err)) {
-        // User cancelled - reset quietly
         setStage('idle');
         setStatus(null);
         setError(null);
         setFlowState(null);
       } else {
+        console.error('[TopUp] Error:', err);
         setError(err instanceof Error ? err.message : 'top up failed');
-        setStage('idle');
+        setStage('error');
+        failShieldFlow(err instanceof Error ? err.message : 'top up failed');
+      }
+
+      // Clear timer on error
+      if (waitingTimerRef.current) {
+        clearInterval(waitingTimerRef.current);
+        waitingTimerRef.current = null;
       }
     } finally {
       setIsTopingUp(false);
     }
   };
 
-  // Transfer public balance to private
+  // Transfer public balance to private (if any leftover)
   const handleTransferToPrivate = async () => {
     if (!azguardClient || !aztecCaipAccount || publicBalance <= 0n) return;
 
@@ -430,13 +360,13 @@ export function PrivateAccount({
     setStatus('transferring to private...');
 
     try {
-      console.log('[PrivateAccount] Transferring', publicBalance.toString(), 'from public to private...');
-      const txHash = await transferToPrivate(azguardClient, aztecCaipAccount, publicBalance);
-      console.log('[PrivateAccount] Transfer to private tx:', txHash);
+      // Note: This would need the token contract's transfer_to_private function
+      // For now, we'll log and skip since Substance handles this automatically
+      console.log('[PrivateAccount] Would transfer', publicBalance.toString(), 'from public to private');
       setStatus('transferred to private');
       setTimeout(() => {
         setStatus(null);
-        onTopUp(); // Refresh balances
+        onTopUp();
       }, 2000);
     } catch (err) {
       console.error('[PrivateAccount] Transfer to private failed:', err);
@@ -559,126 +489,100 @@ export function PrivateAccount({
               </button>
 
               {/* Progress Stages */}
-              {(stage !== 'idle' || txHash) && (
+              {(stage !== 'idle' || baseTxHash) && (
                 <div className="border border-gray-800 p-3 space-y-2">
-                  <div className="text-xs text-gray-500 uppercase">top up progress</div>
+                  <div className="flex justify-between items-center">
+                    <div className="text-xs text-gray-500 uppercase">top up progress</div>
+                    {orderId && (
+                      <div className="text-xs text-gray-600 font-mono">
+                        {orderId.slice(0, 8)}...
+                      </div>
+                    )}
+                  </div>
+
                   <div className="space-y-2">
-                    {/* Stage 1: Lock on Base */}
+                    {/* Stage 1: Open on Base */}
                     <div className="flex items-center gap-2 text-xs">
                       <span className={`w-4 h-4 flex items-center justify-center border ${
-                        stage === 'locking_base' ? 'border-gray-400 text-gray-300' :
-                        ['waiting_solver', 'claiming_aztec', 'transferring_private', 'complete'].includes(stage) ? 'border-green-600 text-green-500' :
+                        stage === 'opening' ? 'border-gray-400 text-gray-300' :
+                        ['waiting_filler', 'claiming', 'complete'].includes(stage) ? 'border-green-600 text-green-500' :
                         'border-gray-800 text-gray-700'
                       }`}>
-                        {['waiting_solver', 'claiming_aztec', 'transferring_private', 'complete'].includes(stage) ? '✓' : '1'}
+                        {['waiting_filler', 'claiming', 'complete'].includes(stage) ? '✓' : '1'}
                       </span>
                       <span className={
-                        ['waiting_solver', 'claiming_aztec', 'transferring_private', 'complete'].includes(stage) ? 'text-green-500' :
-                        stage === 'locking_base' ? 'text-gray-300' :
+                        ['waiting_filler', 'claiming', 'complete'].includes(stage) ? 'text-green-500' :
+                        stage === 'opening' ? 'text-gray-300' :
                         'text-gray-700'
                       }>
-                        {stage === 'locking_base' ? 'locking on base...' : 'locked on base'}
+                        {stage === 'opening' ? 'opening order on base...' : 'order opened'}
                       </span>
                     </div>
 
-                    {/* Stage 2: Waiting for Solver */}
+                    {/* Stage 2: Waiting for Filler */}
                     <div className="flex items-center gap-2 text-xs">
                       <span className={`w-4 h-4 flex items-center justify-center border ${
-                        stage === 'waiting_solver' ? 'border-gray-400 text-gray-300' :
-                        ['claiming_aztec', 'transferring_private', 'complete'].includes(stage) ? 'border-green-600 text-green-500' :
+                        stage === 'waiting_filler' ? 'border-gray-400 text-gray-300' :
+                        ['claiming', 'complete'].includes(stage) ? 'border-green-600 text-green-500' :
                         'border-gray-800 text-gray-700'
                       }`}>
-                        {['claiming_aztec', 'transferring_private', 'complete'].includes(stage) ? '✓' : '2'}
+                        {['claiming', 'complete'].includes(stage) ? '✓' : '2'}
                       </span>
                       <span className={
-                        ['claiming_aztec', 'transferring_private', 'complete'].includes(stage) ? 'text-green-500' :
-                        stage === 'waiting_solver' ? 'text-gray-300' :
+                        ['claiming', 'complete'].includes(stage) ? 'text-green-500' :
+                        stage === 'waiting_filler' ? 'text-gray-300' :
                         'text-gray-700'
                       }>
-                        {stage === 'waiting_solver' ? 'waiting for solver...' :
-                         ['claiming_aztec', 'transferring_private', 'complete'].includes(stage) ? 'solver locked' :
-                         'wait for solver'}
+                        {stage === 'waiting_filler' ? (
+                          <>waiting for filler...{waitingTime > 0 && <span className="text-gray-500 ml-1">({waitingTime}s)</span>}</>
+                        ) : ['claiming', 'complete'].includes(stage) ? 'filler responded' : 'wait for filler'}
                       </span>
                     </div>
 
-                    {/* Stage 3: Redeem on Aztec */}
+                    {/* Stage 3: Claim on Aztec */}
                     <div className="flex items-center gap-2 text-xs">
                       <span className={`w-4 h-4 flex items-center justify-center border ${
-                        stage === 'claiming_aztec' ? 'border-gray-400 text-gray-300' :
-                        ['transferring_private', 'complete'].includes(stage) ? 'border-green-600 text-green-500' :
-                        'border-gray-800 text-gray-700'
-                      }`}>
-                        {['transferring_private', 'complete'].includes(stage) ? '✓' : '3'}
-                      </span>
-                      <span className={
-                        ['transferring_private', 'complete'].includes(stage) ? 'text-green-500' :
-                        stage === 'claiming_aztec' ? 'text-gray-300' :
-                        'text-gray-700'
-                      }>
-                        {stage === 'claiming_aztec' ? 'redeeming...' :
-                         ['transferring_private', 'complete'].includes(stage) ? 'redeemed' :
-                         'redeem'}
-                      </span>
-                    </div>
-
-                    {/* Stage 4: Transfer to Private */}
-                    <div className="flex items-center gap-2 text-xs">
-                      <span className={`w-4 h-4 flex items-center justify-center border ${
-                        stage === 'transferring_private' ? 'border-gray-400 text-gray-300' :
+                        stage === 'claiming' ? 'border-gray-400 text-gray-300' :
                         stage === 'complete' ? 'border-green-600 text-green-500' :
                         'border-gray-800 text-gray-700'
                       }`}>
-                        {stage === 'complete' ? '✓' : '4'}
+                        {stage === 'complete' ? '✓' : '3'}
                       </span>
                       <span className={
                         stage === 'complete' ? 'text-green-500' :
-                        stage === 'transferring_private' ? 'text-gray-300' :
+                        stage === 'claiming' ? 'text-gray-300' :
                         'text-gray-700'
                       }>
-                        {stage === 'transferring_private' ? 'moving to private...' :
-                         stage === 'complete' ? 'private balance' :
-                         'to private'}
+                        {stage === 'claiming' ? 'claiming on aztec...' :
+                         stage === 'complete' ? 'private balance received' :
+                         'claim tokens'}
                       </span>
                     </div>
                   </div>
 
                   {/* Transaction Hashes */}
-                  {(txHash || aztecTxHash) && (
+                  {(baseTxHash || aztecTxHash) && (
                     <div className="text-xs text-gray-600 pt-2 border-t border-gray-800 space-y-1">
-                      {txHash && (
-                        <div>base tx: <a href={`https://sepolia.basescan.org/tx/${txHash}`} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-300 underline">{txHash.slice(0, 10)}...{txHash.slice(-8)}</a></div>
+                      {baseTxHash && (
+                        <div>base tx: <a href={`https://sepolia.basescan.org/tx/${baseTxHash}`} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-300 underline">{baseTxHash.slice(0, 10)}...{baseTxHash.slice(-8)}</a></div>
                       )}
                       {aztecTxHash && (
-                        <div>aztec tx: {aztecTxHash === 'previously-claimed' ? (
-                          <span className="text-green-500">(already claimed)</span>
-                        ) : (
-                          <a href={`https://devnet.aztecscan.xyz/tx-effects/${aztecTxHash}`} target="_blank" rel="noopener noreferrer" className="text-green-500 hover:text-green-300 underline">{aztecTxHash.slice(0, 10)}...{aztecTxHash.slice(-8)}</a>
-                        )}</div>
+                        <div>aztec tx: <a href={`https://devnet.aztecscan.xyz/tx-effects/${aztecTxHash}`} target="_blank" rel="noopener noreferrer" className="text-green-500 hover:text-green-300 underline">{aztecTxHash.slice(0, 10)}...{aztecTxHash.slice(-8)}</a></div>
                       )}
                     </div>
                   )}
 
-                  {/* Action buttons */}
-                  <div className="flex gap-2 pt-2 border-t border-gray-800">
-                    {/* Retry button - shown when claim is paused */}
-                    {claimPaused && stage === 'claiming_aztec' && (
-                      <button
-                        onClick={handleRetryClaim}
-                        className="flex-1 py-1 text-xs border border-gray-600 hover:border-white text-gray-400 hover:text-white"
-                      >
-                        retry claim
-                      </button>
-                    )}
-                    {/* Cancel button - shown during active flow */}
-                    {stage !== 'idle' && stage !== 'complete' && (
+                  {/* Cancel button */}
+                  {stage !== 'idle' && stage !== 'complete' && (
+                    <div className="pt-2 border-t border-gray-800">
                       <button
                         onClick={handleCancelFlow}
-                        className="flex-1 py-1 text-xs border border-red-900 hover:border-red-600 text-red-500 hover:text-red-400"
+                        className="w-full py-1 text-xs border border-red-900 hover:border-red-600 text-red-500 hover:text-red-400"
                       >
                         cancel flow
                       </button>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

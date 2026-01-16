@@ -5,13 +5,10 @@
 
 // ==================== ENVIRONMENT VALIDATION ====================
 
+// Only token addresses are required for Substance bridge
 const REQUIRED_ENV_VARS = [
   'NEXT_PUBLIC_AZTEC_TOKEN_ADDRESS',
-  'NEXT_PUBLIC_AZTEC_TRAIN_ADDRESS',
   'NEXT_PUBLIC_BASE_TOKEN_ADDRESS',
-  'NEXT_PUBLIC_BASE_TRAIN_ADDRESS',
-  'NEXT_PUBLIC_SOLVER_AZTEC_ADDRESS',
-  'NEXT_PUBLIC_SOLVER_EVM_ADDRESS',
 ] as const;
 
 // Validate required env vars on load (client-side only)

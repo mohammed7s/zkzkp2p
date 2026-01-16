@@ -8,6 +8,7 @@ const nextConfig = {
   transpilePackages: [
     '@azguardwallet/aztec-wallet',
     '@azguardwallet/client',
+    '@substancelabs/aztec-evm-bridge-sdk',
   ],
   // Don't bundle Aztec packages on the server - use native Node.js require
   // This prevents WASM worker bundling issues in API routes
@@ -27,6 +28,11 @@ const nextConfig = {
       '@azguardwallet/client': path.resolve(
         __dirname,
         'node_modules/@azguardwallet/client/dist/index.js'
+      ),
+      // Resolve SDK from adjacent repo (file: dependency with pnpm symlinks)
+      '@substancelabs/aztec-evm-bridge-sdk': path.resolve(
+        __dirname,
+        '../../substance-aztec-evm-bridge/packages/sdk/dist/index.mjs'
       ),
     };
 
