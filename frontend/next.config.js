@@ -32,7 +32,7 @@ const nextConfig = {
       // Resolve SDK from adjacent repo (file: dependency with pnpm symlinks)
       '@substancelabs/aztec-evm-bridge-sdk': path.resolve(
         __dirname,
-        '../../substance-aztec-evm-bridge/packages/sdk/dist/index.mjs'
+        '../../substance-aztec-evm-bridge/packages/sdk/dist/index.js'
       ),
     };
 

@@ -14,6 +14,7 @@ import {
   isConfigured,
   TOKENS,
 } from '@/lib/bridge';
+import { executeAzguardCall } from '@/lib/aztec/azguardHelpers';
 import type { BridgeFlowState, BridgeStatus } from '@/lib/bridge/types';
 import { padHex } from 'viem';
 
@@ -360,13 +361,26 @@ export function PrivateAccount({
     setStatus('transferring to private...');
 
     try {
-      // Note: This would need the token contract's transfer_to_private function
-      // For now, we'll log and skip since Substance handles this automatically
-      console.log('[PrivateAccount] Would transfer', publicBalance.toString(), 'from public to private');
+      // Extract plain address from CAIP account
+      const userAddress = aztecCaipAccount.split(':').pop()!;
+
+      console.log('[PrivateAccount] Transferring', publicBalance.toString(), 'from public to private');
+
+      // Call the token contract's transfer_public_to_private function
+      // Args: from, to, amount, nonce (nonce=0 for non-authwit calls)
+      const txHash = await executeAzguardCall(
+        azguardClient,
+        aztecCaipAccount,
+        TOKENS.aztec.address,
+        'transfer_public_to_private',
+        [userAddress, userAddress, publicBalance.toString(), '0']
+      );
+
+      console.log('[PrivateAccount] Transfer tx hash:', txHash);
       setStatus('transferred to private');
       setTimeout(() => {
         setStatus(null);
-        onTopUp();
+        onTopUp(); // Refresh balances
       }, 2000);
     } catch (err) {
       console.error('[PrivateAccount] Transfer to private failed:', err);

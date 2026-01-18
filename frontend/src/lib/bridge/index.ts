@@ -33,7 +33,7 @@ export * from './balances'
 // =============================================================================
 
 import { Bridge } from '@substancelabs/aztec-evm-bridge-sdk'
-import { aztecSepolia, gatewayAddresses } from '@substancelabs/aztec-evm-bridge-sdk'
+import { aztecSepolia } from '@substancelabs/aztec-evm-bridge-sdk'
 import { TOKENS, BASE_CHAIN, TIMING } from './config'
 import type { AzguardClient } from '@azguardwallet/client'
 import type { Hex } from 'viem'

@@ -11,7 +11,7 @@ import { baseSepolia } from 'viem/chains'
 // Re-export SDK constants for convenience
 export {
   aztecSepolia,
-  gatewayAddresses,
+  chainsConfig,
   forwarderAddresses,
   opStackAnchorRegistryAddresses,
   ORDER_DATA_TYPE,

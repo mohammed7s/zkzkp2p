@@ -19,10 +19,10 @@ const ERC20_BALANCE_ABI = [
   },
 ] as const
 
-// Aztec token method selectors
+// Aztec token method selectors (simple names - Azguard resolves the full signature)
 const AZTEC_TOKEN_METHODS = {
-  balance_of_private: 'balance_of_private(aztec::protocol_types::address::aztec_address::AztecAddress)',
-  balance_of_public: 'balance_of_public(aztec::protocol_types::address::aztec_address::AztecAddress)',
+  balance_of_private: 'balance_of_private',
+  balance_of_public: 'balance_of_public',
 }
 
 /**
