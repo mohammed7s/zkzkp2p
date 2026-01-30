@@ -56,6 +56,13 @@ export interface BridgeFlowState {
   error?: string
   createdAt: number
   updatedAt: number
+
+  // Burner info for privacy-preserving deposits (Aztec → Base)
+  burner?: {
+    nonce: number              // Timestamp nonce for derivation (minute precision)
+    smartAccountAddress: string // The smart account address (recipient on Base)
+    eoaAddress: string         // The underlying EOA address
+  }
 }
 
 // =============================================================================

@@ -78,8 +78,8 @@ export async function connectAzguard(): Promise<{
 
       console.log('[Azguard] Requesting chains:', chainsToRequest);
 
-      // Connect with minimal required permissions first to avoid wallet rejection.
-      // Request additional capabilities as optional permissions.
+      // Connect with required permissions including simulate_views for balance checks.
+      // Without simulate_views as required, every balance check triggers a popup.
       await client.connect(
         {
           name: 'zkzkp2p',
@@ -89,13 +89,13 @@ export async function connectAzguard(): Promise<{
         [
           {
             chains: chainsToRequest,
-            methods: ['send_transaction', 'add_private_authwit', 'call'],
+            methods: ['send_transaction', 'add_private_authwit', 'call', 'simulate_views'],
           },
         ],
         [
           {
             chains: chainsToRequest,
-            methods: ['simulate_views', 'register_contract', 'register_token', 'add_public_authwit', 'aztec_createAuthWit'],
+            methods: ['register_contract', 'register_token', 'add_public_authwit', 'aztec_createAuthWit'],
           },
         ]
       );

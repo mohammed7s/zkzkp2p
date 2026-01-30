@@ -31,6 +31,13 @@ interface SerializedBridgeFlow {
   error?: string;
   createdAt: number;
   updatedAt: number;
+
+  // Burner info for privacy-preserving deposits
+  burner?: {
+    nonce: number;             // Timestamp nonce (minute precision)
+    smartAccountAddress: string;
+    eoaAddress: string;
+  };
 }
 
 // ==================== STORE STATE ====================
@@ -83,6 +90,7 @@ function serializeBridgeFlow(
     error: flow.error,
     createdAt: flow.createdAt || Date.now(),
     updatedAt: Date.now(),
+    burner: flow.burner,
   };
 }
 
@@ -98,6 +106,7 @@ function deserializeBridgeFlow(flow: SerializedBridgeFlow): BridgeFlowState & { 
     error: flow.error,
     createdAt: flow.createdAt,
     updatedAt: flow.updatedAt,
+    burner: flow.burner,
   };
 }
 

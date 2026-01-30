@@ -142,7 +142,8 @@ export async function executeShield(params: {
       chainIdOut: aztecSepolia.id,
       amountIn: amount,
       amountOut: amount, // 1:1 for same token
-      tokenIn: padHex(TOKENS.base.address, { size: 32 }),
+      // Don't pad tokenIn - SDK uses it directly for ERC20 calls before padding internally
+      tokenIn: TOKENS.base.address,
       tokenOut: padHex(TOKENS.aztec.address, { size: 32 }),
       recipient: aztecRecipient, // Already padded Aztec address
       mode: 'private',

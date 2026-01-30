@@ -59,6 +59,12 @@ export function PrivateAccount({
   const [waitingTime, setWaitingTime] = useState(0);
   const waitingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [isTransferringToPrivate, setIsTransferringToPrivate] = useState(false);
+  const [lastCompleted, setLastCompleted] = useState<{
+    baseTxHash: string | null;
+    aztecTxHash: string | null;
+    orderId: string | null;
+    amount: string;
+  } | null>(null);
 
   // Flow store for persistence
   const {
@@ -110,7 +116,7 @@ export function PrivateAccount({
   }, []);
 
   const { address: evmAddress } = useAccount();
-  const { aztecAddress, aztecCaipAccount, azguardClient } = useWalletStore();
+  const { aztecAddress, aztecCaipAccount, azguardClient, setAztecTxPending } = useWalletStore();
   const { data: walletClient } = useWalletClient();
   const publicClient = usePublicClient();
 
@@ -225,6 +231,7 @@ export function PrivateAccount({
       waitingTimerRef.current = null;
     }
 
+    setAztecTxPending(true);
     try {
       // Create bridge instance
       console.log('[TopUp] Creating bridge instance...');
@@ -317,17 +324,22 @@ export function PrivateAccount({
       setStage('complete');
       completeShieldFlow();
 
-      // Refresh balances and reset after delay
-      setTimeout(() => {
-        onTopUp();
-        setStage('idle');
-        setTopUpAmount('');
-        setBaseTxHash(null);
-        setAztecTxHash(null);
-        setOrderId(null);
-        setFlowState(null);
-        setWaitingTime(0);
-      }, 2000);
+      // Save completed flow info for success banner, then reset flow state
+      setLastCompleted({
+        baseTxHash,
+        aztecTxHash,
+        orderId,
+        amount: topUpAmount,
+      });
+      onTopUp();
+      setStage('idle');
+      setIsTopingUp(false);
+      setTopUpAmount('');
+      setBaseTxHash(null);
+      setAztecTxHash(null);
+      setOrderId(null);
+      setFlowState(null);
+      setWaitingTime(0);
 
     } catch (err) {
       if (isUserRejection(err)) {
@@ -349,6 +361,7 @@ export function PrivateAccount({
       }
     } finally {
       setIsTopingUp(false);
+      setAztecTxPending(false);
     }
   };
 
@@ -396,18 +409,23 @@ export function PrivateAccount({
   };
 
   return (
-    <div className="border border-gray-800 p-6 space-y-6">
-      <div className="text-sm text-gray-500 uppercase tracking-wide">private account</div>
-
-      {/* Balance Display */}
-      <div className="space-y-4">
-        <div className="text-center py-6 border border-gray-800">
-          <div className="text-3xl text-white">{formatTokenAmount(privateBalance)}</div>
-          <div className="text-sm text-gray-600 mt-1">USDC</div>
+    <div className="space-y-4">
+      {/* Aztec Wallet - Purple accent */}
+      <div className="border border-purple-900/50 bg-purple-950/10 p-6 space-y-4">
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-purple-500"></div>
+          <div className="text-sm text-purple-400 uppercase tracking-wide">aztec wallet</div>
         </div>
 
-        <div className="flex justify-between items-center text-xs text-gray-600">
-          <span>public balance</span>
+        {/* Private Balance */}
+        <div className="text-center py-6 border border-purple-900/30 bg-purple-950/20">
+          <div className="text-3xl text-white">{formatTokenAmount(privateBalance)}</div>
+          <div className="text-sm text-purple-400 mt-1">private USDC</div>
+        </div>
+
+        {/* Public Balance (leftover from bridge) */}
+        <div className="flex justify-between items-center text-xs text-gray-500">
+          <span>public balance (aztec)</span>
           <div className="flex items-center gap-2">
             <span>{formatTokenAmount(publicBalance)} USDC</span>
             {publicBalance > 0n && (
@@ -424,18 +442,36 @@ export function PrivateAccount({
         </div>
       </div>
 
+      {/* Base Wallet - Blue accent */}
+      <div className="border border-blue-900/50 bg-blue-950/10 p-6 space-y-4">
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-blue-500"></div>
+          <div className="text-sm text-blue-400 uppercase tracking-wide">base sepolia</div>
+        </div>
+
+        {/* Base Balance */}
+        <div className="text-center py-4 border border-blue-900/30 bg-blue-950/20">
+          <div className="text-2xl text-white">{formatTokenAmount(baseBalance)}</div>
+          <div className="text-sm text-blue-400 mt-1">USDC</div>
+        </div>
+
+        {!isEvmConnected && (
+          <div className="text-xs text-gray-500 text-center">connect base wallet to see balance</div>
+        )}
+      </div>
+
       {/* Fund Account Section */}
       {!showTopUp ? (
         <button
           onClick={() => setShowTopUp(true)}
-          className="w-full py-3 border border-gray-700 hover:border-gray-500 text-gray-400 hover:text-white transition-colors"
+          className="w-full py-3 border border-purple-900/50 hover:border-purple-500 text-purple-400 hover:text-purple-300 transition-colors"
         >
-          fund private account (aztec)
+          bridge base → aztec (shield)
         </button>
       ) : (
         <div className="space-y-4 border border-gray-800 p-4">
           <div className="flex justify-between items-center">
-            <span className="text-xs text-gray-500">fund from base</span>
+            <span className="text-xs text-gray-500">bridge usdc to aztec private</span>
             <button
               onClick={() => setShowTopUp(false)}
               className="text-xs text-gray-600 hover:text-gray-400"
@@ -447,12 +483,12 @@ export function PrivateAccount({
           {/* Connect Base if needed */}
           {!isEvmConnected ? (
             <div className="space-y-3">
-              <p className="text-xs text-gray-600">connect base wallet to top up</p>
+              <p className="text-xs text-gray-600">connect base wallet to bridge</p>
               <ConnectButton.Custom>
                 {({ openConnectModal }) => (
                   <button
                     onClick={openConnectModal}
-                    className="w-full py-2 border border-gray-700 hover:border-gray-500 text-sm"
+                    className="w-full py-2 border border-blue-900 hover:border-blue-500 text-blue-400 text-sm"
                   >
                     connect base wallet
                   </button>
@@ -461,11 +497,11 @@ export function PrivateAccount({
             </div>
           ) : (
             <div className="space-y-4">
-              {/* Base Balance */}
+              {/* Base Balance with Faucet */}
               <div className="flex justify-between text-xs">
-                <span className="text-gray-600">base balance</span>
+                <span className="text-gray-600">available on base</span>
                 <div className="flex items-center gap-2">
-                  <span>{formatTokenAmount(baseBalance)} USDC</span>
+                  <span className="text-blue-400">{formatTokenAmount(baseBalance)} USDC</span>
                   <button
                     onClick={handleFaucet}
                     disabled={isFauceting}
@@ -477,7 +513,7 @@ export function PrivateAccount({
               </div>
 
               {/* Amount Input */}
-              <div className="flex border border-gray-800 focus-within:border-gray-600">
+              <div className="flex border border-gray-800 focus-within:border-purple-900">
                 <input
                   type="text"
                   value={topUpAmount}
@@ -493,13 +529,13 @@ export function PrivateAccount({
                 </button>
               </div>
 
-              {/* Top Up Button */}
+              {/* Shield Button */}
               <button
                 onClick={handleTopUp}
                 disabled={isTopingUp || !topUpAmount}
-                className="w-full py-2 border border-gray-600 hover:border-white hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-sm"
+                className="w-full py-2 border border-purple-900 hover:border-purple-500 text-purple-400 hover:text-purple-300 transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-sm"
               >
-                {isTopingUp ? 'processing...' : 'top up'}
+                {isTopingUp ? 'processing...' : 'shield to aztec'}
               </button>
 
               {/* Progress Stages */}
@@ -602,6 +638,35 @@ export function PrivateAccount({
             </div>
           )}
 
+          {/* Success Banner */}
+          {lastCompleted && (
+            <div className="border border-green-800 bg-green-950/20 p-3 space-y-2">
+              <div className="flex justify-between items-center">
+                <span className="text-xs text-green-400 uppercase">shield complete</span>
+                <button
+                  onClick={() => setLastCompleted(null)}
+                  className="text-xs text-gray-600 hover:text-gray-400"
+                >
+                  dismiss
+                </button>
+              </div>
+              <div className="text-sm text-green-300">
+                {lastCompleted.amount} USDC shielded to aztec
+              </div>
+              <div className="text-xs text-gray-600 space-y-1">
+                {lastCompleted.baseTxHash && (
+                  <div>base tx: <a href={`https://sepolia.basescan.org/tx/${lastCompleted.baseTxHash}`} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-300 underline">{lastCompleted.baseTxHash.slice(0, 10)}...{lastCompleted.baseTxHash.slice(-8)}</a></div>
+                )}
+                {lastCompleted.aztecTxHash && (
+                  <div>aztec tx: <a href={`https://devnet.aztecscan.xyz/tx-effects/${lastCompleted.aztecTxHash}`} target="_blank" rel="noopener noreferrer" className="text-green-500 hover:text-green-300 underline">{lastCompleted.aztecTxHash.slice(0, 10)}...{lastCompleted.aztecTxHash.slice(-8)}</a></div>
+                )}
+                {lastCompleted.orderId && (
+                  <div className="text-gray-700">order: {lastCompleted.orderId.slice(0, 10)}...{lastCompleted.orderId.slice(-8)}</div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Status/Error */}
           {status && <p className="text-xs text-gray-500">{status}</p>}
           {error && <p className="text-xs text-red-500">{error}</p>}
@@ -609,9 +674,9 @@ export function PrivateAccount({
       )}
 
       {/* Info */}
-      <div className="text-xs text-gray-700 space-y-1 pt-4 border-t border-gray-900">
-        <p>your private balance is shielded on aztec network</p>
-        <p>only you can see or spend these funds</p>
+      <div className="text-xs text-gray-600 space-y-1 p-4 border border-gray-900 bg-gray-950/50">
+        <p><span className="text-purple-400">aztec:</span> private balance - only you can see or spend</p>
+        <p><span className="text-blue-400">base:</span> public balance - bridge to aztec for privacy</p>
       </div>
     </div>
   );

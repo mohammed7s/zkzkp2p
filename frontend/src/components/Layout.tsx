@@ -13,6 +13,7 @@ import {
 } from '@/lib/bridge';
 import { usePublicClient } from 'wagmi';
 import { CreateDeposit } from './CreateDeposit';
+import { TransactionHistory } from './TransactionHistory';
 import { PrivateAccount } from './PrivateAccount';
 
 const DOCS_URL = 'https://docs.aztec.network';
@@ -51,6 +52,18 @@ export function Layout() {
   const [baseBalance, setBaseBalance] = useState<bigint>(0n);
   const [isConnectingAztec, setIsConnectingAztec] = useState(false);
   const [isLoadingBalances, setIsLoadingBalances] = useState(false);
+  const [copiedAddress, setCopiedAddress] = useState<'aztec' | 'base' | null>(null);
+
+  const copyToClipboard = async (address: string | undefined | null, type: 'aztec' | 'base') => {
+    if (!address) return;
+    try {
+      await navigator.clipboard.writeText(address);
+      setCopiedAddress(type);
+      setTimeout(() => setCopiedAddress(null), 2000);
+    } catch (e) {
+      console.error('Failed to copy:', e);
+    }
+  };
 
   useEffect(() => {
     setMounted(true);
@@ -164,19 +177,14 @@ export function Layout() {
 
   useEffect(() => {
     if (mounted && isAztecConnected && !isAztecTxPending) {
-      // Delay initial fetch by 1s to ensure React state is fully settled
-      // This prevents racing with the post-connection IDB stabilization
+      // Fetch balances once on connect (with delay for IDB stabilization)
+      // No polling - user can click "refresh" to update, or balances update after txs
       const initialTimeout = setTimeout(() => {
         fetchBalances();
-      }, 1000);
-
-      // Polling every 30s - no longer bypasses isAztecTxPending since we
-      // now always check it (Brillig errors were caused by IDB conflicts)
-      const interval = setInterval(() => fetchBalances(), 30000);
+      }, 2000);
 
       return () => {
         clearTimeout(initialTimeout);
-        clearInterval(interval);
       };
     }
   }, [fetchBalances, mounted, isAztecConnected, isAztecTxPending]);
@@ -288,13 +296,25 @@ export function Layout() {
             <span className="text-gray-600 text-sm">|</span>
             <div className="flex items-center gap-3">
               <span className="text-xs text-gray-500">aztec:</span>
-              <span className="text-sm">{shortenAddress(aztecAddress || '')}</span>
+              <button
+                onClick={() => copyToClipboard(aztecAddress, 'aztec')}
+                className="text-sm hover:text-white cursor-pointer transition-colors"
+                title="Click to copy full address"
+              >
+                {copiedAddress === 'aztec' ? 'copied!' : shortenAddress(aztecAddress || '')}
+              </button>
             </div>
             <span className="text-gray-800">|</span>
             <div className="flex items-center gap-3">
               <span className="text-xs text-gray-500">base:</span>
               {isEvmConnected ? (
-                <span className="text-sm">{shortenAddress(evmAddress || '')}</span>
+                <button
+                  onClick={() => copyToClipboard(evmAddress, 'base')}
+                  className="text-sm hover:text-white cursor-pointer transition-colors"
+                  title="Click to copy full address"
+                >
+                  {copiedAddress === 'base' ? 'copied!' : shortenAddress(evmAddress || '')}
+                </button>
               ) : (
                 <ConnectButton.Custom>
                   {({ openConnectModal }) => (
@@ -358,6 +378,8 @@ export function Layout() {
             onTopUp={fetchBalances}
           />
         </div>
+
+        <TransactionHistory />
       </main>
     </div>
   );
