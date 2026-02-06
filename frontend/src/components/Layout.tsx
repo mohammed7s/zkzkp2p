@@ -345,9 +345,24 @@ export function Layout() {
       <main className="max-w-6xl mx-auto px-4 py-8 relative z-10">
         {!anyConnected ? (
           /* Landing -- no wallets connected */
-          <div className="max-w-md mx-auto py-12">
-            <div className="text-center space-y-6">
-              <p className="text-gray-500 text-sm">private liquidity for peer-to-peer payments</p>
+          <div className="flex-1 flex flex-col items-center justify-center py-24 px-4">
+            <div className="max-w-md text-center space-y-6">
+              <img
+                src="/logos/wordmark.svg"
+                alt="zkzkp2p"
+                className="h-10 w-auto mx-auto"
+              />
+              <p className="text-gray-400">
+                the privacy layer for{' '}
+                <a
+                  href="https://zkp2p.xyz"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-white hover:underline"
+                >
+                  zkp2p
+                </a>
+              </p>
               <p className="text-xs text-gray-600">
                 connect your wallets above to get started
               </p>
@@ -362,6 +377,16 @@ export function Layout() {
                 </a>
               </p>
             </div>
+            <footer className="mt-auto pt-12 pb-6">
+              <p className="text-center text-xs text-gray-700 font-mono">
+                built on{' '}
+                <a href="https://aztec.network" target="_blank" rel="noopener noreferrer" className="hover:text-gray-500">aztec</a>
+                {' + '}
+                <a href="https://substance.exchange" target="_blank" rel="noopener noreferrer" className="hover:text-gray-500">substance</a>
+                {' + '}
+                <a href="https://zkp2p.xyz" target="_blank" rel="noopener noreferrer" className="hover:text-gray-500">zkp2p</a>
+              </p>
+            </footer>
           </div>
         ) : (
           /* App -- at least one wallet connected */

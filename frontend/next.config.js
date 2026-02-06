@@ -29,10 +29,10 @@ const nextConfig = {
         __dirname,
         'node_modules/@azguardwallet/client/dist/index.js'
       ),
-      // Resolve SDK from adjacent repo (file: dependency with pnpm symlinks)
+      // Resolve SDK from vendored copy
       '@substancelabs/aztec-evm-bridge-sdk': path.resolve(
         __dirname,
-        '../../substance-aztec-evm-bridge/packages/sdk/dist/index.js'
+        'vendor/substance-sdk/dist/index.js'
       ),
     };
 
