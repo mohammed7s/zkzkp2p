@@ -39,11 +39,11 @@ export async function connectAzguard(): Promise<{
 
   // Check for window.azguard first (like Holonym does)
   if (!window.azguard) {
-    throw new Error('Azguard wallet extension not detected. Please install from https://azguard.xyz');
+    throw new Error('Azguard wallet extension not detected. Please install from https://azguardwallet.io');
   }
 
   if (!(await isAzguardInstalled())) {
-    throw new Error('Azguard wallet is not installed. Please install from https://azguard.xyz');
+    throw new Error('Azguard wallet is not installed. Please install from https://azguardwallet.io');
   }
 
   try {

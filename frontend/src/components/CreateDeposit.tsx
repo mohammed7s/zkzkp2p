@@ -716,7 +716,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
           {burnerAddress && (
             <div className="text-xs text-gray-600 pt-2 border-t border-gray-800">
               burner: <button
-                onClick={() => { navigator.clipboard.writeText(burnerAddress); }}
+                onClick={() => { navigator.clipboard.writeText(burnerAddress).catch(() => { window.prompt('Copy address:', burnerAddress); }); }}
                 title="Click to copy"
                 className="font-mono text-purple-400 hover:text-purple-300 cursor-pointer bg-transparent border-none p-0"
               >{burnerAddress.slice(0, 10)}...{burnerAddress.slice(-6)}</button>
@@ -731,7 +731,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
                 <div>aztec tx: <a href={`https://devnet.aztecscan.xyz/tx-effects/${openTxHash}`} target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 underline">{openTxHash.slice(0, 10)}...{openTxHash.slice(-8)}</a></div>
               )}
               {baseTxHash && (
-                <div>base tx: <a href={`https://sepolia.basescan.org/tx/${baseTxHash}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline">{baseTxHash.slice(0, 10)}...{baseTxHash.slice(-8)}</a></div>
+                <div>base tx: <a href={`https://basescan.org/tx/${baseTxHash}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline">{baseTxHash.slice(0, 10)}...{baseTxHash.slice(-8)}</a></div>
               )}
             </div>
           )}
@@ -759,7 +759,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
           )}
           {baseTxHash && (
             <div className="text-xs text-gray-600">
-              base tx: <a href={`https://sepolia.basescan.org/tx/${baseTxHash}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline font-mono">{baseTxHash.slice(0, 16)}...</a>
+              base tx: <a href={`https://basescan.org/tx/${baseTxHash}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline font-mono">{baseTxHash.slice(0, 16)}...</a>
             </div>
           )}
           <button
@@ -846,7 +846,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
                       <span>{timeStr}</span>
                       {flow.txHashes?.claim && (
                         <a
-                          href={`https://sepolia.basescan.org/tx/${flow.txHashes.claim}`}
+                          href={`https://basescan.org/tx/${flow.txHashes.claim}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-blue-400 hover:text-blue-300 underline"

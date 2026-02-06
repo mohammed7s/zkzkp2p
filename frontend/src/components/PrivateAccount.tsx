@@ -446,7 +446,7 @@ export function PrivateAccount({
       <div className="border border-blue-900/50 bg-blue-950/10 p-6 space-y-4">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-blue-500"></div>
-          <div className="text-sm text-blue-400 uppercase tracking-wide">base sepolia</div>
+          <div className="text-sm text-blue-400 uppercase tracking-wide">base</div>
         </div>
 
         {/* Base Balance */}
@@ -614,7 +614,7 @@ export function PrivateAccount({
                   {(baseTxHash || aztecTxHash) && (
                     <div className="text-xs text-gray-600 pt-2 border-t border-gray-800 space-y-1">
                       {baseTxHash && (
-                        <div>base tx: <a href={`https://sepolia.basescan.org/tx/${baseTxHash}`} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-300 underline">{baseTxHash.slice(0, 10)}...{baseTxHash.slice(-8)}</a></div>
+                        <div>base tx: <a href={`https://basescan.org/tx/${baseTxHash}`} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-300 underline">{baseTxHash.slice(0, 10)}...{baseTxHash.slice(-8)}</a></div>
                       )}
                       {aztecTxHash && (
                         <div>aztec tx: <a href={`https://devnet.aztecscan.xyz/tx-effects/${aztecTxHash}`} target="_blank" rel="noopener noreferrer" className="text-green-500 hover:text-green-300 underline">{aztecTxHash.slice(0, 10)}...{aztecTxHash.slice(-8)}</a></div>
@@ -655,7 +655,7 @@ export function PrivateAccount({
               </div>
               <div className="text-xs text-gray-600 space-y-1">
                 {lastCompleted.baseTxHash && (
-                  <div>base tx: <a href={`https://sepolia.basescan.org/tx/${lastCompleted.baseTxHash}`} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-300 underline">{lastCompleted.baseTxHash.slice(0, 10)}...{lastCompleted.baseTxHash.slice(-8)}</a></div>
+                  <div>base tx: <a href={`https://basescan.org/tx/${lastCompleted.baseTxHash}`} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-300 underline">{lastCompleted.baseTxHash.slice(0, 10)}...{lastCompleted.baseTxHash.slice(-8)}</a></div>
                 )}
                 {lastCompleted.aztecTxHash && (
                   <div>aztec tx: <a href={`https://devnet.aztecscan.xyz/tx-effects/${lastCompleted.aztecTxHash}`} target="_blank" rel="noopener noreferrer" className="text-green-500 hover:text-green-300 underline">{lastCompleted.aztecTxHash.slice(0, 10)}...{lastCompleted.aztecTxHash.slice(-8)}</a></div>

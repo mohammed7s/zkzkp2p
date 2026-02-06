@@ -1,0 +1,31 @@
+{
+  "name": "@substancelabs/aztec-evm-bridge-sdk",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "TypeScript SDK for bridging assets between Aztec and EVM chains using ERC-7683",
+  "license": "MIT",
+  "author": "Substance Labs",
+  "types": "dist/index.d.ts",
+  "module": "dist/index.js",
+  "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@azguardwallet/client": "0.7.0",
+    "@aztec/accounts": "3.0.0-devnet.6-patch.1",
+    "@aztec/aztec.js": "3.0.0-devnet.6-patch.1",
+    "@aztec/foundation": "3.0.0-devnet.6-patch.1",
+    "@aztec/kv-store": "3.0.0-devnet.6-patch.1",
+    "@aztec/noir-contracts.js": "3.0.0-devnet.6-patch.1",
+    "@aztec/pxe": "3.0.0-devnet.6-patch.1",
+    "@aztec/stdlib": "3.0.0-devnet.6-patch.1",
+    "@defi-wonderland/aztec-standards": "3.0.0-devnet.6-patch.1",
+    "viem": "^2.33.2"
+  }
+}

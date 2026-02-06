@@ -28,10 +28,10 @@ export const CHAINS = {
     nodeUrl: process.env.NEXT_PUBLIC_AZTEC_NODE_URL || 'https://devnet.aztec-labs.com',
     name: 'Aztec Devnet',
   },
-  baseSepolia: {
-    chainId: parseInt(process.env.NEXT_PUBLIC_BASE_CHAIN_ID || '84532'),
-    rpcUrl: process.env.NEXT_PUBLIC_BASE_RPC_URL || 'https://sepolia.base.org',
-    name: 'Base Sepolia',
+  base: {
+    chainId: parseInt(process.env.NEXT_PUBLIC_BASE_CHAIN_ID || '8453'),
+    rpcUrl: process.env.NEXT_PUBLIC_BASE_RPC_URL || 'https://mainnet.base.org',
+    name: 'Base',
   },
 } as const;
 

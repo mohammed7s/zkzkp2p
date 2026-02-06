@@ -6,7 +6,7 @@
  */
 
 import type { Hex } from 'viem'
-import { baseSepolia } from 'viem/chains'
+import { base } from 'viem/chains'
 
 // Re-export SDK constants for convenience
 export {
@@ -32,10 +32,10 @@ export {
 
 // Base chain config with viem chain object
 export const BASE_CHAIN = {
-  id: baseSepolia.id, // 84532
-  name: 'Base Sepolia',
-  rpcUrl: process.env.NEXT_PUBLIC_BASE_RPC_URL || 'https://sepolia.base.org',
-  viemChain: baseSepolia,
+  id: base.id, // 8453
+  name: 'Base',
+  rpcUrl: process.env.NEXT_PUBLIC_BASE_RPC_URL || 'https://mainnet.base.org',
+  viemChain: base,
 } as const
 
 // =============================================================================

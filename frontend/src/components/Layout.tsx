@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { useAccount } from 'wagmi';
+import { useAccount, useDisconnect } from 'wagmi';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { useWalletStore } from '@/stores/walletStore';
 import {
@@ -44,6 +44,7 @@ export function Layout() {
     setAztecConnected,
     setAztecError
   } = useWalletStore();
+  const { disconnect: disconnectEvm } = useDisconnect();
   const publicClient = usePublicClient();
 
   const [mounted, setMounted] = useState(false);
@@ -98,11 +99,7 @@ export function Layout() {
     }
   }, [mounted, aztecCaipAccount, evmAddress]);
 
-  // Fetch balances SEQUENTIALLY to prevent Azguard IDB conflicts
-  // Skip if a tx is pending - Azguard has IDB issues with concurrent operations
-  // Use force=true for post-transaction refresh (still respects tx pending check)
   const fetchBalances = useCallback(async (force: boolean = false) => {
-    // Always respect isAztecTxPending - concurrent IDB operations cause Brillig errors
     if (isAztecTxPending) {
       console.log('[Layout] Skipping balance fetch - Aztec tx pending');
       return;
@@ -113,7 +110,6 @@ export function Layout() {
     const newBalances: { privateBalance?: string; publicBalance?: string; baseBalance?: string } = {};
 
     try {
-      // Base balance (fast - direct RPC, can run independently)
       if (publicClient && evmAddress && TOKENS.base.address) {
         try {
           const bal = await getBaseUSDCBalance(publicClient, evmAddress);
@@ -124,9 +120,7 @@ export function Layout() {
         }
       }
 
-      // Aztec balances - use SEPARATE calls (original working approach)
       if (azguardClient && aztecCaipAccount && TOKENS.aztec.address) {
-        // First: private balance
         try {
           console.log('[Layout] Fetching private balance...');
           const priv = await getAztecPrivateBalance(azguardClient, aztecCaipAccount);
@@ -141,7 +135,6 @@ export function Layout() {
           console.error('[Layout] Failed to fetch private balance:', e);
         }
 
-        // Second: public balance (separate call)
         try {
           console.log('[Layout] Fetching public balance...');
           const pub = await getAztecPublicBalance(azguardClient, aztecCaipAccount);
@@ -157,7 +150,6 @@ export function Layout() {
         }
       }
 
-      // Cache the balances for next page load
       if (Object.keys(newBalances).length > 0) {
         try {
           const cacheKey = getBalanceCacheKey(aztecCaipAccount, evmAddress);
@@ -177,8 +169,6 @@ export function Layout() {
 
   useEffect(() => {
     if (mounted && isAztecConnected && !isAztecTxPending) {
-      // Fetch balances once on connect (with delay for IDB stabilization)
-      // No polling - user can click "refresh" to update, or balances update after txs
       const initialTimeout = setTimeout(() => {
         fetchBalances();
       }, 2000);
@@ -198,9 +188,6 @@ export function Layout() {
       const { connectAzguard } = await import('@/lib/aztec/azguardHelpers');
       const result = await connectAzguard();
       if (result) {
-        // Wait for Azguard's IDB to stabilize before setting connected state
-        // This ensures balance fetch doesn't race with Azguard initialization
-        // Increased delay from 2s to 3s to prevent IDB conflicts on first fetch
         console.log('[Layout] Connected to Azguard, waiting for IDB to stabilize...');
         await new Promise(resolve => setTimeout(resolve, 3000));
 
@@ -214,7 +201,7 @@ export function Layout() {
     }
   };
 
-  const handleDisconnect = async () => {
+  const handleDisconnectAztec = async () => {
     try {
       const { disconnectAzguard } = await import('@/lib/aztec/azguardHelpers');
       const client = useWalletStore.getState().azguardClient;
@@ -223,11 +210,17 @@ export function Layout() {
     disconnectAztec();
   };
 
-  // Prevent SSR - render loading state on server
+  const handleDisconnectAll = async () => {
+    await handleDisconnectAztec();
+    disconnectEvm();
+  };
+
+  // Prevent SSR
   if (!mounted) {
     return (
-      <div className="min-h-screen bg-black text-gray-300 font-mono">
-        <div className="max-w-2xl mx-auto px-4 py-20">
+      <div className="min-h-screen bg-black text-gray-300 font-mono relative">
+        <div className="starfield" />
+        <div className="max-w-2xl mx-auto px-4 py-20 relative z-10">
           <div className="text-center">
             <h1 className="text-2xl text-white">zkzkp2p</h1>
             <p className="text-gray-500 text-sm mt-2">loading...</p>
@@ -237,84 +230,68 @@ export function Layout() {
     );
   }
 
-  // Not connected state
-  if (!isAztecConnected) {
-    return (
-      <div className="min-h-screen bg-black text-gray-300 font-mono">
-        {/* Header with docs link */}
-        <header className="border-b border-gray-900 px-4 py-3">
-          <div className="max-w-6xl mx-auto flex items-center justify-between">
-            <span className="text-white">zkzkp2p</span>
-            <a
-              href={DOCS_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-gray-600 hover:text-gray-400"
-            >
-              docs
-            </a>
-          </div>
-        </header>
+  const anyConnected = isAztecConnected || isEvmConnected;
 
-        <div className="max-w-2xl mx-auto px-4 py-20">
-          <div className="text-center space-y-8">
-            <div className="space-y-2">
-              <p className="text-gray-500 text-sm">private liquidity for peer-to-peer payments</p>
-            </div>
-
-            <div className="border border-gray-800 p-8 space-y-6">
-              <p className="text-sm text-gray-400">
-                Connect your private wallet to create deposits and receive payments.
-              </p>
-
-              <button
-                onClick={handleConnectAztec}
-                disabled={isConnectingAztec}
-                className="w-full py-3 border border-gray-600 hover:border-gray-400 hover:text-white transition-colors disabled:opacity-50"
-              >
-                {isConnectingAztec ? 'connecting...' : 'connect aztec wallet'}
-              </button>
-
-              <p className="text-xs text-gray-600">
-                requires <a href="https://azguard.xyz" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-400">azguard wallet</a>
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Connected state
   return (
-    <div className="min-h-screen bg-black text-gray-300 font-mono">
-      {/* Header */}
-      <header className="border-b border-gray-900 px-4 py-3">
+    <div className="min-h-screen bg-black text-gray-300 font-mono relative">
+      <div className="starfield" />
+      {/* Header -- always visible */}
+      <header className="border-b border-gray-900 px-4 py-3 relative z-10">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-6">
+          <div className="flex items-center gap-4">
             <span className="text-white">zkzkp2p</span>
-            <span className="text-gray-600 text-sm">|</span>
-            <div className="flex items-center gap-3">
+            <span className="text-gray-800">|</span>
+            {/* Aztec wallet */}
+            <div className="flex items-center gap-2">
               <span className="text-xs text-gray-500">aztec:</span>
-              <button
-                onClick={() => copyToClipboard(aztecAddress, 'aztec')}
-                className="text-sm hover:text-white cursor-pointer transition-colors"
-                title="Click to copy full address"
-              >
-                {copiedAddress === 'aztec' ? 'copied!' : shortenAddress(aztecAddress || '')}
-              </button>
+              {isAztecConnected ? (
+                <>
+                  <button
+                    onClick={() => copyToClipboard(aztecAddress, 'aztec')}
+                    className="text-sm hover:text-white cursor-pointer transition-colors"
+                    title="Click to copy full address"
+                  >
+                    {copiedAddress === 'aztec' ? 'copied!' : shortenAddress(aztecAddress || '')}
+                  </button>
+                  <button
+                    onClick={handleDisconnectAztec}
+                    className="text-xs text-gray-700 hover:text-red-400 transition-colors"
+                    title="Disconnect Aztec"
+                  >
+                    x
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={handleConnectAztec}
+                  disabled={isConnectingAztec}
+                  className="text-xs border border-gray-700 px-2 py-1 hover:border-gray-500 hover:text-white transition-colors disabled:opacity-50"
+                >
+                  {isConnectingAztec ? '...' : 'connect'}
+                </button>
+              )}
             </div>
             <span className="text-gray-800">|</span>
-            <div className="flex items-center gap-3">
+            {/* Base wallet */}
+            <div className="flex items-center gap-2">
               <span className="text-xs text-gray-500">base:</span>
               {isEvmConnected ? (
-                <button
-                  onClick={() => copyToClipboard(evmAddress, 'base')}
-                  className="text-sm hover:text-white cursor-pointer transition-colors"
-                  title="Click to copy full address"
-                >
-                  {copiedAddress === 'base' ? 'copied!' : shortenAddress(evmAddress || '')}
-                </button>
+                <>
+                  <button
+                    onClick={() => copyToClipboard(evmAddress, 'base')}
+                    className="text-sm hover:text-white cursor-pointer transition-colors"
+                    title="Click to copy full address"
+                  >
+                    {copiedAddress === 'base' ? 'copied!' : shortenAddress(evmAddress || '')}
+                  </button>
+                  <button
+                    onClick={() => disconnectEvm()}
+                    className="text-xs text-gray-700 hover:text-red-400 transition-colors"
+                    title="Disconnect Base"
+                  >
+                    x
+                  </button>
+                </>
               ) : (
                 <ConnectButton.Custom>
                   {({ openConnectModal }) => (
@@ -329,7 +306,7 @@ export function Layout() {
               )}
             </div>
           </div>
-          <div className="flex items-center gap-6">
+          <div className="flex items-center gap-4">
             <a
               href={DOCS_URL}
               target="_blank"
@@ -338,48 +315,73 @@ export function Layout() {
             >
               docs
             </a>
-            <span className="text-sm flex items-center gap-2">
-              <span className="text-gray-500">private:</span>{' '}
-              <span className="text-white">{formatTokenAmount(privateBalance)} USDC</span>
+            {isAztecConnected && (
+              <span className="text-sm flex items-center gap-2">
+                <span className="text-gray-500">private:</span>{' '}
+                <span className="text-white">{formatTokenAmount(privateBalance)} USDC</span>
+                <button
+                  onClick={() => fetchBalances(true)}
+                  disabled={isLoadingBalances}
+                  className="ml-1 px-2 py-0.5 text-xs border border-gray-700 hover:border-gray-500 hover:text-white disabled:opacity-50 transition-colors"
+                  title="Refresh balances"
+                >
+                  {isLoadingBalances ? 'loading...' : 'refresh'}
+                </button>
+              </span>
+            )}
+            {anyConnected && (
               <button
-                onClick={() => fetchBalances(true)}
-                disabled={isLoadingBalances}
-                className="ml-1 px-2 py-0.5 text-xs border border-gray-700 hover:border-gray-500 hover:text-white disabled:opacity-50 transition-colors"
-                title="Refresh balances"
+                onClick={handleDisconnectAll}
+                className="text-xs text-gray-600 hover:text-red-400"
               >
-                {isLoadingBalances ? 'loading...' : 'refresh'}
+                disconnect all
               </button>
-            </span>
-            <button
-              onClick={handleDisconnect}
-              className="text-xs text-gray-600 hover:text-gray-400"
-            >
-              disconnect
-            </button>
+            )}
           </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="max-w-6xl mx-auto px-4 py-8">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Left: Create Deposit */}
-          <CreateDeposit
-            privateBalance={privateBalance}
-            onRefreshBalances={fetchBalances}
-          />
-
-          {/* Right: Private Account */}
-          <PrivateAccount
-            privateBalance={privateBalance}
-            publicBalance={publicBalance}
-            baseBalance={baseBalance}
-            isEvmConnected={isEvmConnected}
-            onTopUp={fetchBalances}
-          />
-        </div>
-
-        <TransactionHistory />
+      <main className="max-w-6xl mx-auto px-4 py-8 relative z-10">
+        {!anyConnected ? (
+          /* Landing -- no wallets connected */
+          <div className="max-w-md mx-auto py-12">
+            <div className="text-center space-y-6">
+              <p className="text-gray-500 text-sm">private liquidity for peer-to-peer payments</p>
+              <p className="text-xs text-gray-600">
+                connect your wallets above to get started
+              </p>
+              <p className="text-xs text-gray-700">
+                requires{' '}
+                <a href="https://azguardwallet.io" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-400">
+                  azguard wallet
+                </a>
+                {' + '}
+                <a href="https://metamask.io" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-400">
+                  metamask
+                </a>
+              </p>
+            </div>
+          </div>
+        ) : (
+          /* App -- at least one wallet connected */
+          <>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <CreateDeposit
+                privateBalance={privateBalance}
+                onRefreshBalances={fetchBalances}
+              />
+              <PrivateAccount
+                privateBalance={privateBalance}
+                publicBalance={publicBalance}
+                baseBalance={baseBalance}
+                isEvmConnected={isEvmConnected}
+                onTopUp={fetchBalances}
+              />
+            </div>
+            <TransactionHistory />
+          </>
+        )}
       </main>
     </div>
   );
