@@ -8,7 +8,6 @@ const nextConfig = {
   transpilePackages: [
     '@azguardwallet/aztec-wallet',
     '@azguardwallet/client',
-    '@substancelabs/aztec-evm-bridge-sdk',
   ],
   // Don't bundle Aztec packages on the server - use native Node.js require
   // This prevents WASM worker bundling issues in API routes
