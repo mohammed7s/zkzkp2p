@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@azguardwallet/client": "^0.7.0",
+    "@aztec/accounts": "3.0.0-devnet.6-patch.1",
     "@aztec/aztec.js": "3.0.0-devnet.6-patch.1",
     "@aztec/foundation": "3.0.0-devnet.6-patch.1",
     "@aztec/stdlib": "3.0.0-devnet.6-patch.1",
@@ -23,6 +24,8 @@
     "permissionless": "^0.3.4",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "viem": "^2.33.2",
     "wagmi": "^2.14.0",
     "zustand": "^5.0.0"
