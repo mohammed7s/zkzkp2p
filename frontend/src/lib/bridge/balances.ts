@@ -4,9 +4,7 @@
  */
 
 import type { PublicClient } from 'viem'
-import type { AzguardClient } from '@azguardwallet/client'
 import { TOKENS } from './config'
-import { simulateAzguardView } from '../aztec/azguardHelpers'
 
 // ERC20 ABI for balance queries
 const ERC20_BALANCE_ABI = [
@@ -18,12 +16,6 @@ const ERC20_BALANCE_ABI = [
     outputs: [{ name: 'balance', type: 'uint256' }],
   },
 ] as const
-
-// Aztec token method selectors (simple names - Azguard resolves the full signature)
-const AZTEC_TOKEN_METHODS = {
-  balance_of_private: 'balance_of_private',
-  balance_of_public: 'balance_of_public',
-}
 
 /**
  * Get ERC20 token balance on Base
@@ -47,71 +39,79 @@ export async function getBaseUSDCBalance(
 }
 
 /**
- * Extract plain address from CAIP format
- * aztec:999999:0x123... -> 0x123...
- */
-function extractAddressFromCaip(caipAccount: string): string {
-  const parts = caipAccount.split(':')
-  return parts[parts.length - 1]
-}
-
-/**
- * Get private USDC balance on Aztec
+ * Get private USDC balance on Aztec via embedded wallet's PXE
  */
 export async function getAztecPrivateBalance(
-  client: AzguardClient,
-  caipAccount: string
+  aztecWallet: any, // BrowserEmbeddedWallet (Wallet interface)
+  aztecAddress: string
 ): Promise<bigint | null> {
   if (!TOKENS.aztec.address) {
     console.error('[Aztec] AZTEC_TOKEN_ADDRESS not configured!')
     throw new Error('Token address not configured')
   }
 
-  const userAddress = extractAddressFromCaip(caipAccount)
-
   try {
     console.log('[Aztec] Fetching private balance...')
 
-    const result = await simulateAzguardView(
-      client,
-      caipAccount,
-      TOKENS.aztec.address,
-      AZTEC_TOKEN_METHODS.balance_of_private,
-      [userAddress]
-    )
+    // Use the wallet's PXE to simulate an unconstrained call
+    const pxe = aztecWallet.getNode ? aztecWallet.getNode() : aztecWallet.pxe;
+    if (!pxe) {
+      console.error('[Aztec] Cannot access PXE from wallet');
+      return null;
+    }
 
-    return BigInt(result?.toString() || '0')
+    // Import AztecAddress for proper type handling
+    const { AztecAddress } = await import('@aztec/aztec.js');
+    const tokenAddr = AztecAddress.fromString(TOKENS.aztec.address);
+    const userAddr = AztecAddress.fromString(aztecAddress);
+
+    // Use simulateUnconstrained to call balance_of_private
+    const result = await pxe.simulateUnconstrained(
+      'balance_of_private',
+      [userAddr],
+      tokenAddr,
+      userAddr
+    );
+
+    return BigInt(result?.toString() || '0');
   } catch (e) {
-    console.error('[Aztec] Failed to fetch private balance:', e)
-    return null
+    console.error('[Aztec] Failed to fetch private balance:', e);
+    return null;
   }
 }
 
 /**
- * Get public USDC balance on Aztec
+ * Get public USDC balance on Aztec via embedded wallet's PXE
  */
 export async function getAztecPublicBalance(
-  client: AzguardClient,
-  caipAccount: string
+  aztecWallet: any, // BrowserEmbeddedWallet (Wallet interface)
+  aztecAddress: string
 ): Promise<bigint | null> {
   if (!TOKENS.aztec.address) {
     throw new Error('Token address not configured')
   }
 
-  const userAddress = extractAddressFromCaip(caipAccount)
-
   try {
-    const result = await simulateAzguardView(
-      client,
-      caipAccount,
-      TOKENS.aztec.address,
-      AZTEC_TOKEN_METHODS.balance_of_public,
-      [userAddress]
-    )
+    const pxe = aztecWallet.getNode ? aztecWallet.getNode() : aztecWallet.pxe;
+    if (!pxe) {
+      console.error('[Aztec] Cannot access PXE from wallet');
+      return null;
+    }
 
-    return BigInt(result?.toString() || '0')
+    const { AztecAddress } = await import('@aztec/aztec.js');
+    const tokenAddr = AztecAddress.fromString(TOKENS.aztec.address);
+    const userAddr = AztecAddress.fromString(aztecAddress);
+
+    const result = await pxe.simulateUnconstrained(
+      'balance_of_public',
+      [userAddr],
+      tokenAddr,
+      userAddr
+    );
+
+    return BigInt(result?.toString() || '0');
   } catch (e) {
-    console.error('[Aztec] Failed to fetch public balance:', e)
-    return null
+    console.error('[Aztec] Failed to fetch public balance:', e);
+    return null;
   }
 }

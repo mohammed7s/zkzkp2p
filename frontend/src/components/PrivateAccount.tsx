@@ -10,11 +10,10 @@ import {
   executeShield,
   formatTokenAmount,
   parseTokenAmount,
-  getAztecAddressFromAzguardAccount,
   isConfigured,
   TOKENS,
 } from '@/lib/bridge';
-import { executeAzguardCall } from '@/lib/aztec/azguardHelpers';
+// Transfer to private is done via the aztecWallet directly
 import type { BridgeFlowState, BridgeStatus } from '@/lib/bridge/types';
 import { padHex } from 'viem';
 
@@ -116,7 +115,7 @@ export function PrivateAccount({
   }, []);
 
   const { address: evmAddress } = useAccount();
-  const { aztecAddress, aztecCaipAccount, azguardClient, setAztecTxPending } = useWalletStore();
+  const { aztecAddress, aztecWallet, setAztecTxPending } = useWalletStore();
   const { data: walletClient } = useWalletClient();
   const publicClient = usePublicClient();
 
@@ -195,7 +194,7 @@ export function PrivateAccount({
   };
 
   const handleTopUp = async () => {
-    if (!walletClient || !publicClient || !evmAddress || !aztecAddress || !aztecCaipAccount || !azguardClient) {
+    if (!walletClient || !publicClient || !evmAddress || !aztecAddress || !aztecWallet) {
       setError('wallets not connected');
       return;
     }
@@ -236,13 +235,12 @@ export function PrivateAccount({
       // Create bridge instance
       console.log('[TopUp] Creating bridge instance...');
       const bridge = await createBridge({
-        azguardClient,
+        aztecWallet,
         evmProvider: walletClient,
       });
 
-      // Get Aztec address from CAIP account (padded to 32 bytes)
-      const aztecAddr = getAztecAddressFromAzguardAccount(aztecCaipAccount as `aztec:${number}:${string}`);
-      const paddedAztecAddr = padHex(aztecAddr as `0x${string}`, { size: 32 });
+      // Pad Aztec address to 32 bytes
+      const paddedAztecAddr = padHex(aztecAddress as `0x${string}`, { size: 32 });
 
       // Create initial flow state for persistence
       const initialFlow: BridgeFlowState = {
@@ -367,29 +365,31 @@ export function PrivateAccount({
 
   // Transfer public balance to private (if any leftover)
   const handleTransferToPrivate = async () => {
-    if (!azguardClient || !aztecCaipAccount || publicBalance <= 0n) return;
+    if (!aztecWallet || !aztecAddress || publicBalance <= 0n) return;
 
     setIsTransferringToPrivate(true);
     setError(null);
     setStatus('transferring to private...');
 
     try {
-      // Extract plain address from CAIP account
-      const userAddress = aztecCaipAccount.split(':').pop()!;
-
       console.log('[PrivateAccount] Transferring', publicBalance.toString(), 'from public to private');
 
-      // Call the token contract's transfer_public_to_private function
-      // Args: from, to, amount, nonce (nonce=0 for non-authwit calls)
-      const txHash = await executeAzguardCall(
-        azguardClient,
-        aztecCaipAccount,
-        TOKENS.aztec.address,
-        'transfer_public_to_private',
-        [userAddress, userAddress, publicBalance.toString(), '0']
-      );
+      // Use the embedded wallet to call transfer_public_to_private
+      const { AztecAddress } = await import('@aztec/aztec.js');
+      const { Contract } = await import('@aztec/aztec.js');
 
-      console.log('[PrivateAccount] Transfer tx hash:', txHash);
+      const tokenAddr = AztecAddress.fromString(TOKENS.aztec.address);
+      const userAddr = AztecAddress.fromString(aztecAddress);
+
+      // Create a contract instance and call transfer_public_to_private
+      // The wallet IS the sender, so we can call directly
+      const tokenContract = await Contract.at(tokenAddr, [] as any, aztecWallet);
+      const tx = await tokenContract.methods
+        .transfer_public_to_private(userAddr, userAddr, publicBalance, 0n)
+        .send()
+        .wait();
+
+      console.log('[PrivateAccount] Transfer tx hash:', tx.txHash.toString());
       setStatus('transferred to private');
       setTimeout(() => {
         setStatus(null);

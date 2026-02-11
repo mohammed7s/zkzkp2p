@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { useAccount, useDisconnect } from 'wagmi';
+import { useAccount, useDisconnect, useWalletClient } from 'wagmi';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { useWalletStore } from '@/stores/walletStore';
 import {
@@ -15,14 +15,15 @@ import { usePublicClient } from 'wagmi';
 import { CreateDeposit } from './CreateDeposit';
 import { TransactionHistory } from './TransactionHistory';
 import { PrivateAccount } from './PrivateAccount';
+import type { Hex } from 'viem';
 
 const DOCS_URL = '/docs';
 const GITHUB_URL = 'https://github.com/mohammed7s/zkzkp2p';
 const BALANCE_CACHE_PREFIX = 'zkzkp2p-balance-cache';
 
-function getBalanceCacheKey(aztecAccount?: string | null, evmAddress?: string | null): string | null {
-  if (!aztecAccount && !evmAddress) return null;
-  const aztecKey = aztecAccount ? aztecAccount.toLowerCase() : 'none';
+function getBalanceCacheKey(aztecAddress?: string | null, evmAddress?: string | null): string | null {
+  if (!aztecAddress && !evmAddress) return null;
+  const aztecKey = aztecAddress ? aztecAddress.toLowerCase() : 'none';
   const evmKey = evmAddress ? evmAddress.toLowerCase() : 'none';
   return `${BALANCE_CACHE_PREFIX}:${aztecKey}:${evmKey}`;
 }
@@ -33,13 +34,11 @@ function shortenAddress(address: string, chars = 4): string {
 }
 
 export function Layout() {
-  // All hooks must be called before any early returns
   const { isConnected: isEvmConnected, address: evmAddress } = useAccount();
   const {
     isAztecConnected,
     aztecAddress,
-    aztecCaipAccount,
-    azguardClient,
+    aztecWallet,
     isAztecTxPending,
     disconnectAztec,
     setAztecConnected,
@@ -47,6 +46,7 @@ export function Layout() {
   } = useWalletStore();
   const { disconnect: disconnectEvm } = useDisconnect();
   const publicClient = usePublicClient();
+  const { data: walletClient } = useWalletClient();
 
   const [mounted, setMounted] = useState(false);
   const [privateBalance, setPrivateBalance] = useState<bigint>(0n);
@@ -74,7 +74,7 @@ export function Layout() {
   useEffect(() => {
     if (!mounted) return;
 
-    const cacheKey = getBalanceCacheKey(aztecCaipAccount, evmAddress);
+    const cacheKey = getBalanceCacheKey(aztecAddress, evmAddress);
     if (!cacheKey) {
       setPrivateBalance(0n);
       setPublicBalance(0n);
@@ -98,7 +98,7 @@ export function Layout() {
     } catch (e) {
       console.error('[Layout] Failed to load cached balances:', e);
     }
-  }, [mounted, aztecCaipAccount, evmAddress]);
+  }, [mounted, aztecAddress, evmAddress]);
 
   const fetchBalances = useCallback(async (force: boolean = false) => {
     if (isAztecTxPending) {
@@ -121,16 +121,14 @@ export function Layout() {
         }
       }
 
-      if (azguardClient && aztecCaipAccount && TOKENS.aztec.address) {
+      if (aztecWallet && aztecAddress && TOKENS.aztec.address) {
         try {
           console.log('[Layout] Fetching private balance...');
-          const priv = await getAztecPrivateBalance(azguardClient, aztecCaipAccount);
+          const priv = await getAztecPrivateBalance(aztecWallet, aztecAddress);
           if (priv !== null) {
             setPrivateBalance(priv);
             newBalances.privateBalance = priv.toString();
             console.log('[Layout] Private balance:', priv.toString());
-          } else {
-            console.log('[Layout] Private balance query returned null, keeping previous value');
           }
         } catch (e) {
           console.error('[Layout] Failed to fetch private balance:', e);
@@ -138,13 +136,11 @@ export function Layout() {
 
         try {
           console.log('[Layout] Fetching public balance...');
-          const pub = await getAztecPublicBalance(azguardClient, aztecCaipAccount);
+          const pub = await getAztecPublicBalance(aztecWallet, aztecAddress);
           if (pub !== null) {
             setPublicBalance(pub);
             newBalances.publicBalance = pub.toString();
             console.log('[Layout] Public balance:', pub.toString());
-          } else {
-            console.log('[Layout] Public balance query returned null, keeping previous value');
           }
         } catch (e) {
           console.error('[Layout] Failed to fetch public balance:', e);
@@ -153,7 +149,7 @@ export function Layout() {
 
       if (Object.keys(newBalances).length > 0) {
         try {
-          const cacheKey = getBalanceCacheKey(aztecCaipAccount, evmAddress);
+          const cacheKey = getBalanceCacheKey(aztecAddress, evmAddress);
           if (!cacheKey) return;
 
           const existing = localStorage.getItem(cacheKey);
@@ -166,7 +162,7 @@ export function Layout() {
     } finally {
       setIsLoadingBalances(false);
     }
-  }, [publicClient, evmAddress, azguardClient, aztecCaipAccount, isAztecTxPending]);
+  }, [publicClient, evmAddress, aztecWallet, aztecAddress, isAztecTxPending]);
 
   useEffect(() => {
     if (mounted && isAztecConnected && !isAztecTxPending) {
@@ -182,19 +178,31 @@ export function Layout() {
 
   const handleConnectAztec = async () => {
     if (isConnectingAztec) return;
+
+    // Must have MetaMask connected first
+    if (!isEvmConnected || !evmAddress || !walletClient) {
+      setAztecError('Connect MetaMask first');
+      return;
+    }
+
     setIsConnectingAztec(true);
     setAztecError(null);
 
     try {
-      const { connectAzguard } = await import('@/lib/aztec/azguardHelpers');
-      const result = await connectAzguard();
-      if (result) {
-        console.log('[Layout] Connected to Azguard, waiting for IDB to stabilize...');
-        await new Promise(resolve => setTimeout(resolve, 3000));
+      const { connectEmbeddedWallet } = await import('@/lib/aztec/embeddedWallet');
 
-        setAztecConnected(result.address, result.caipAccount, result.client);
-        console.log('[Layout] Azguard ready, will fetch balances now');
-      }
+      // Sign message via MetaMask
+      const signMessage = async (message: string): Promise<Hex> => {
+        return await walletClient.signMessage({
+          account: evmAddress,
+          message,
+        }) as Hex;
+      };
+
+      const result = await connectEmbeddedWallet(signMessage, evmAddress);
+
+      console.log('[Layout] Connected embedded wallet, address:', result.address);
+      setAztecConnected(result.address, result.wallet);
     } catch (error: any) {
       setAztecError(error.message || 'Failed to connect');
     } finally {
@@ -204,9 +212,8 @@ export function Layout() {
 
   const handleDisconnectAztec = async () => {
     try {
-      const { disconnectAzguard } = await import('@/lib/aztec/azguardHelpers');
-      const client = useWalletStore.getState().azguardClient;
-      if (client) await disconnectAzguard(client);
+      const { disconnectEmbeddedWallet } = await import('@/lib/aztec/embeddedWallet');
+      await disconnectEmbeddedWallet();
     } catch (e) {}
     disconnectAztec();
   };
@@ -236,44 +243,13 @@ export function Layout() {
   return (
     <div className="min-h-screen bg-black text-gray-300 font-mono relative">
       <div className="starfield" />
-      {/* Header -- always visible */}
+      {/* Header */}
       <header className="border-b border-gray-900 px-4 py-3 relative z-10">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
             <a href="/" className="text-white hover:opacity-80">zkzkp2p</a>
             <span className="text-gray-800">|</span>
-            {/* Aztec wallet */}
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">aztec:</span>
-              {isAztecConnected ? (
-                <>
-                  <button
-                    onClick={() => copyToClipboard(aztecAddress, 'aztec')}
-                    className="text-sm hover:text-white cursor-pointer transition-colors"
-                    title="Click to copy full address"
-                  >
-                    {copiedAddress === 'aztec' ? 'copied!' : shortenAddress(aztecAddress || '')}
-                  </button>
-                  <button
-                    onClick={handleDisconnectAztec}
-                    className="text-xs text-gray-700 hover:text-red-400 transition-colors"
-                    title="Disconnect Aztec"
-                  >
-                    x
-                  </button>
-                </>
-              ) : (
-                <button
-                  onClick={handleConnectAztec}
-                  disabled={isConnectingAztec}
-                  className="text-xs border border-gray-700 px-2 py-1 hover:border-gray-500 hover:text-white transition-colors disabled:opacity-50"
-                >
-                  {isConnectingAztec ? '...' : 'connect'}
-                </button>
-              )}
-            </div>
-            <span className="text-gray-800">|</span>
-            {/* Base wallet */}
+            {/* Base wallet (MetaMask) */}
             <div className="flex items-center gap-2">
               <span className="text-xs text-gray-500">base:</span>
               {isEvmConnected ? (
@@ -304,6 +280,38 @@ export function Layout() {
                     </button>
                   )}
                 </ConnectButton.Custom>
+              )}
+            </div>
+            <span className="text-gray-800">|</span>
+            {/* Aztec wallet (derived from MetaMask) */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500">aztec:</span>
+              {isAztecConnected ? (
+                <>
+                  <button
+                    onClick={() => copyToClipboard(aztecAddress, 'aztec')}
+                    className="text-sm hover:text-white cursor-pointer transition-colors"
+                    title="Click to copy full address"
+                  >
+                    {copiedAddress === 'aztec' ? 'copied!' : shortenAddress(aztecAddress || '')}
+                  </button>
+                  <button
+                    onClick={handleDisconnectAztec}
+                    className="text-xs text-gray-700 hover:text-red-400 transition-colors"
+                    title="Disconnect Aztec"
+                  >
+                    x
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={handleConnectAztec}
+                  disabled={isConnectingAztec || !isEvmConnected}
+                  className="text-xs border border-gray-700 px-2 py-1 hover:border-gray-500 hover:text-white transition-colors disabled:opacity-50"
+                  title={!isEvmConnected ? 'Connect MetaMask first' : undefined}
+                >
+                  {isConnectingAztec ? '...' : 'derive'}
+                </button>
               )}
             </div>
           </div>
@@ -344,14 +352,10 @@ export function Layout() {
               <ConnectButton.Custom>
                 {({ openConnectModal }) => (
                   <button
-                    onClick={async () => {
-                      await handleConnectAztec();
-                      openConnectModal();
-                    }}
-                    disabled={isConnectingAztec}
+                    onClick={openConnectModal}
                     className="px-4 py-1.5 bg-white text-black text-sm rounded-full hover:bg-gray-200 disabled:opacity-50 transition-colors"
                   >
-                    {isConnectingAztec ? 'connecting...' : 'login'}
+                    login
                   </button>
                 )}
               </ConnectButton.Custom>
@@ -371,7 +375,6 @@ export function Layout() {
       {/* Main Content */}
       <main className="max-w-6xl mx-auto px-4 py-8 relative z-10">
         {!anyConnected ? (
-          /* Landing -- no wallets connected */
           <div className="flex-1 flex flex-col items-center justify-center py-24 px-4">
             <div className="max-w-md text-center space-y-6">
               <img
@@ -391,17 +394,14 @@ export function Layout() {
                 </a>
               </p>
               <p className="text-xs text-gray-600">
-                connect your wallets above to get started
+                connect your metamask wallet to get started
               </p>
               <p className="text-xs text-gray-700">
                 requires{' '}
-                <a href="https://azguardwallet.io" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-400">
-                  azguard wallet
-                </a>
-                {' + '}
                 <a href="https://metamask.io" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-400">
                   metamask
                 </a>
+                {' — controls both Base and Aztec wallets'}
               </p>
             </div>
             <footer className="mt-auto pt-12 pb-6">
@@ -416,7 +416,6 @@ export function Layout() {
             </footer>
           </div>
         ) : (
-          /* App -- at least one wallet connected */
           <>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
               <CreateDeposit

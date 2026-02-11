@@ -62,7 +62,7 @@ const STAGE_LABELS: Record<DepositStage, string> = {
 const STAGE_DETAILS: Record<DepositStage, string> = {
   idle: '',
   deriving_burner: 'sign in metamask to derive one-time burner key...',
-  opening: 'confirm in azguard wallet...',
+  opening: 'signing transaction...',
   waiting_filler: 'filler will bridge funds to base (up to 5 min)',
   claiming: 'finalizing bridge settlement...',
   depositing_zkp2p: 'creating zkp2p deposit (gasless)...',
@@ -164,7 +164,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
   }, [clearActiveFlows]);
 
   const { address: evmAddress } = useAccount();
-  const { aztecCaipAccount, azguardClient, setAztecTxPending } = useWalletStore();
+  const { aztecAddress: aztecAddr, aztecWallet, setAztecTxPending } = useWalletStore();
   const { data: walletClient } = useWalletClient();
   const publicClient = usePublicClient();
 
@@ -247,7 +247,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
   }, [getActiveDepositFlow, walletClient, evmAddress, paymentMethod, paymentTag, currency, completeDepositFlow, onRefreshBalances]);
 
   const handleCreate = async () => {
-    if (!azguardClient || !aztecCaipAccount || !evmAddress || !walletClient || !publicClient) {
+    if (!aztecWallet || !aztecAddr || !evmAddress || !walletClient || !publicClient) {
       setError('wallets not connected - connect both aztec and base wallets');
       return;
     }
@@ -323,7 +323,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       // ====================================================================
       console.log('[Deposit] Creating bridge instance...');
       const bridge = await createBridge({
-        azguardClient,
+        aztecWallet,
         evmProvider: walletClient,
       });
 

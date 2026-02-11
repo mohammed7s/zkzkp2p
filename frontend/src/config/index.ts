@@ -71,7 +71,7 @@ export const TIMING = {
 
   // UI delays
   balanceRefreshDelay: 2000,     // Delay before refreshing balances after tx
-  idbStabilizationDelay: 3000,   // Workaround for Azguard IDB issues
+  idbStabilizationDelay: 3000,   // Delay for PXE initialization
 
   // View simulation timeout
   viewSimulationTimeout: 60000,  // 1 minute for view calls
@@ -106,8 +106,8 @@ export const PROTOCOL = {
   // Minimum solver reward (10% of amount)
   minSolverRewardPercent: 10,
 
-  // Azguard uses different chain ID for authwit (known bug)
-  azguardAuthwitChainId: 11155655,
+  // Legacy chain ID for authwit computation
+  authwitChainId: 11155655,
 } as const;
 
 // ==================== STORAGE KEYS ====================

@@ -35,7 +35,6 @@ export * from './balances'
 import { Bridge } from '@substancelabs/aztec-evm-bridge-sdk'
 import { aztecSepolia } from '@substancelabs/aztec-evm-bridge-sdk'
 import { TOKENS, BASE_CHAIN, TIMING } from './config'
-import type { AzguardClient } from '@azguardwallet/client'
 import type { Hex } from 'viem'
 import type { BridgeFlowState } from './types'
 import { padHex } from 'viem'
@@ -45,14 +44,13 @@ import { base } from 'viem/chains'
  * Create a Bridge instance configured for zkzkp2p
  */
 export async function createBridge(params: {
-  azguardClient?: AzguardClient
+  aztecWallet?: any // BrowserEmbeddedWallet (Wallet interface)
   evmProvider?: any
 }): Promise<Bridge> {
-  const { azguardClient, evmProvider } = params
+  const { aztecWallet, evmProvider } = params
 
   return Bridge.create({
-    // Cast to any: SDK bundled types reference older @azguardwallet/client version
-    azguardClient: azguardClient as any,
+    aztecWallet: aztecWallet as any,
     evmProvider,
   })
 }
@@ -142,10 +140,9 @@ export async function executeShield(params: {
       chainIdOut: aztecSepolia.id,
       amountIn: amount,
       amountOut: amount, // 1:1 for same token
-      // Don't pad tokenIn - SDK uses it directly for ERC20 calls before padding internally
       tokenIn: TOKENS.base.address,
       tokenOut: padHex(TOKENS.aztec.address, { size: 32 }),
-      recipient: aztecRecipient, // Already padded Aztec address
+      recipient: aztecRecipient,
       mode: 'private',
       data: padHex('0x', { size: 32 }),
       fillDeadline: Math.floor(Date.now() / 1000) + TIMING.defaultFillDeadlineSeconds,

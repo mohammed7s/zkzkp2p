@@ -6,7 +6,6 @@
  */
 
 import type { Hex, Address, WalletClient, PublicClient } from 'viem'
-import type { AzguardClient } from '@azguardwallet/client'
 
 // =============================================================================
 // Wallet Context (local type for our flows)
@@ -14,8 +13,8 @@ import type { AzguardClient } from '@azguardwallet/client'
 
 export interface WalletContext {
   aztec?: {
-    client: AzguardClient
-    caipAccount: string
+    wallet: any // BrowserEmbeddedWallet (Wallet interface)
+    address: string
   }
   evm?: {
     walletClient: WalletClient
@@ -59,9 +58,9 @@ export interface BridgeFlowState {
 
   // Burner info for privacy-preserving deposits (Aztec → Base)
   burner?: {
-    nonce: number              // Timestamp nonce for derivation (minute precision)
-    smartAccountAddress: string // The smart account address (recipient on Base)
-    eoaAddress: string         // The underlying EOA address
+    nonce: number
+    smartAccountAddress: string
+    eoaAddress: string
   }
 }
 
