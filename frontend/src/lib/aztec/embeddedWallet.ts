@@ -15,11 +15,56 @@ import { CHAINS } from '@/config';
 // Domain separator
 const DOMAIN = 'zkzkp2p-aztec';
 
+// SessionStorage key for cached derived keys
+const SESSION_KEY = 'zkzkp2p-aztec-keys';
+
 // Cached wallet instance
 let cachedWallet: {
   address: string;
   wallet: EmbeddedWallet;
 } | null = null;
+
+/**
+ * Cache derived keys in sessionStorage so we can auto-reconnect on page reload
+ * without requiring another MetaMask signature popup.
+ * Uses sessionStorage (not localStorage) so keys are cleared when the tab closes.
+ */
+function cacheKeys(mainAddress: string, secret: string, salt: string, signingKey: string): void {
+  try {
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({
+      address: mainAddress.toLowerCase(),
+      secret,
+      salt,
+      signingKey,
+    }));
+  } catch (e) {
+    console.warn('[EmbeddedWallet] Failed to cache keys:', e);
+  }
+}
+
+/**
+ * Retrieve cached keys from sessionStorage
+ */
+function getCachedKeys(mainAddress: string): { secret: string; salt: string; signingKey: string } | null {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (data.address !== mainAddress.toLowerCase()) return null;
+    return { secret: data.secret, salt: data.salt, signingKey: data.signingKey };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Clear cached keys (on disconnect)
+ */
+function clearCachedKeys(): void {
+  try {
+    sessionStorage.removeItem(SESSION_KEY);
+  } catch {}
+}
 
 /**
  * Get the message to sign for Aztec key derivation
@@ -98,15 +143,68 @@ export async function connectEmbeddedWallet(
   const signingKey = deriveSigningKey(secret);
   console.log('[EmbeddedWallet] Step 2 complete: Keys derived');
 
-  // Step 3: Create EmbeddedWallet (starts local PXE)
+  // Cache keys in sessionStorage for auto-reconnect on reload
+  cacheKeys(mainAddress, secret.toString(), salt.toString(), signingKey.toString('hex'));
+
+  // Steps 3-4: Create wallet and account
+  return await createWalletWithKeys(mainAddress, secret, salt, signingKey);
+}
+
+/**
+ * Reconnect to Aztec using cached keys from sessionStorage.
+ * No MetaMask popup — keys were cached during the initial derivation.
+ * Returns null if no cached keys exist for this address.
+ */
+export async function reconnectEmbeddedWallet(
+  mainAddress: string
+): Promise<{ wallet: EmbeddedWallet; address: string } | null> {
+  // Return in-memory cached wallet if same address
+  if (cachedWallet && cachedWallet.address.toLowerCase() === mainAddress.toLowerCase()) {
+    return {
+      wallet: cachedWallet.wallet,
+      address: cachedWallet.address,
+    };
+  }
+
+  // Check sessionStorage for cached keys
+  const keys = getCachedKeys(mainAddress);
+  if (!keys) {
+    console.log('[EmbeddedWallet] No cached keys for', mainAddress);
+    return null;
+  }
+
+  console.log('[EmbeddedWallet] Auto-reconnecting with cached keys...');
+  const secret = Fr.fromString(keys.secret);
+  const salt = Fr.fromString(keys.salt);
+  const signingKey = Buffer.from(keys.signingKey, 'hex');
+
+  return await createWalletWithKeys(mainAddress, secret, salt, signingKey);
+}
+
+/**
+ * Check if we have cached keys for auto-reconnect (synchronous, no WASM)
+ */
+export function hasCachedKeys(mainAddress: string): boolean {
+  return getCachedKeys(mainAddress) !== null;
+}
+
+/**
+ * Internal: create wallet and account from derived keys
+ */
+async function createWalletWithKeys(
+  mainAddress: string,
+  secret: Fr,
+  salt: Fr,
+  signingKey: Buffer,
+): Promise<{ wallet: EmbeddedWallet; address: string }> {
+  // Create EmbeddedWallet (starts local PXE)
   const nodeUrl = CHAINS.aztec.nodeUrl;
-  console.log('[EmbeddedWallet] Step 3: Creating EmbeddedWallet with node:', nodeUrl);
+  console.log('[EmbeddedWallet] Creating EmbeddedWallet with node:', nodeUrl);
   console.log('[EmbeddedWallet] Environment check:', {
     crossOriginIsolated: typeof self !== 'undefined' ? (self as any).crossOriginIsolated : 'N/A',
     sharedArrayBuffer: typeof SharedArrayBuffer !== 'undefined',
     hardwareConcurrency: typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : 'N/A',
   });
-  console.log('[EmbeddedWallet] This may take a while (PXE init + WASM setup)...');
 
   // Pre-initialize BarretenbergSync with logging so we can see what bb.js is doing.
   // Since it's a singleton, later calls from PXE will reuse this instance.
@@ -118,25 +216,23 @@ export async function connectEmbeddedWallet(
     console.log('[EmbeddedWallet] BarretenbergSync initialized successfully');
   } catch (e: any) {
     console.error('[EmbeddedWallet] BarretenbergSync init FAILED:', e);
-    console.error('[EmbeddedWallet] This is the WASM crash. See bb.js logs above for details.');
     throw new Error(`bb.js WASM initialization failed: ${e.message || 'proc_exit called'}`);
   }
 
   const t0 = Date.now();
   const wallet = await EmbeddedWallet.create(nodeUrl);
-  console.log('[EmbeddedWallet] Step 3 complete: Wallet created in', Date.now() - t0, 'ms');
+  console.log('[EmbeddedWallet] Wallet created in', Date.now() - t0, 'ms');
 
-  // Step 4: Create ECDSA K account
-  console.log('[EmbeddedWallet] Step 4: Creating ECDSA K account...');
+  // Create ECDSA K account
+  console.log('[EmbeddedWallet] Creating ECDSA K account...');
   const t1 = Date.now();
   const account = await wallet.createECDSAKAccount(secret, salt, signingKey);
-  console.log('[EmbeddedWallet] Step 4 complete: Account created in', Date.now() - t1, 'ms');
+  console.log('[EmbeddedWallet] Account created in', Date.now() - t1, 'ms');
 
-  // Get the account address (AccountManager exposes .address, not .getAddress())
   const aztecAddress = account.address.toString();
-  console.log('[EmbeddedWallet] Done! Account address:', aztecAddress);
+  console.log('[EmbeddedWallet] Account address:', aztecAddress);
 
-  // Cache the wallet
+  // Cache the wallet in memory
   cachedWallet = {
     address: mainAddress.toLowerCase(),
     wallet,
@@ -152,6 +248,7 @@ export async function connectEmbeddedWallet(
  * Disconnect and clean up the embedded wallet
  */
 export async function disconnectEmbeddedWallet(): Promise<void> {
+  clearCachedKeys();
   if (cachedWallet) {
     try {
       await cachedWallet.wallet.stop();

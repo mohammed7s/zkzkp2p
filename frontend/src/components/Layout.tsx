@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAccount, useDisconnect, useWalletClient } from 'wagmi';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { useWalletStore } from '@/stores/walletStore';
@@ -68,9 +68,69 @@ export function Layout() {
     }
   };
 
+  const [isAutoReconnecting, setIsAutoReconnecting] = useState(false);
+  const connectingRef = useRef(false);
+
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  // Auto-connect Aztec when MetaMask connects:
+  // - If cached keys exist in sessionStorage → reconnect silently (no popup)
+  // - If no cached keys and walletClient ready → derive via MetaMask signature (first time)
+  // Uses a ref guard (not state) to prevent the state update from cancelling the async work.
+  useEffect(() => {
+    if (!mounted || !isEvmConnected || !evmAddress || isAztecConnected) return;
+    if (connectingRef.current) return;
+    connectingRef.current = true;
+
+    (async () => {
+      const { hasCachedKeys, reconnectEmbeddedWallet, connectEmbeddedWallet } = await import('@/lib/aztec/embeddedWallet');
+
+      if (hasCachedKeys(evmAddress)) {
+        // Reconnect from cached keys — no MetaMask popup
+        console.log('[Layout] Auto-reconnecting Aztec wallet from cached keys...');
+        setIsAutoReconnecting(true);
+        try {
+          const result = await reconnectEmbeddedWallet(evmAddress);
+          if (result) {
+            console.log('[Layout] Auto-reconnected, address:', result.address);
+            setAztecConnected(result.address, result.wallet);
+          }
+        } catch (error: any) {
+          console.error('[Layout] Auto-reconnect failed:', error);
+        } finally {
+          setIsAutoReconnecting(false);
+          connectingRef.current = false;
+        }
+      } else if (walletClient) {
+        // First time — derive via MetaMask signature
+        console.log('[Layout] First connection — deriving Aztec wallet...');
+        setIsConnectingAztec(true);
+        setAztecError(null);
+        try {
+          const signMessage = async (message: string): Promise<Hex> => {
+            return await walletClient.signMessage({
+              account: evmAddress,
+              message,
+            }) as Hex;
+          };
+          const result = await connectEmbeddedWallet(signMessage, evmAddress);
+          console.log('[Layout] Derived Aztec wallet, address:', result.address);
+          setAztecConnected(result.address, result.wallet);
+        } catch (error: any) {
+          console.error('[Layout] Aztec derivation failed:', error);
+          setAztecError(error.message || 'Failed to derive');
+        } finally {
+          setIsConnectingAztec(false);
+          connectingRef.current = false;
+        }
+      } else {
+        // walletClient not ready yet — will retry when it becomes available
+        connectingRef.current = false;
+      }
+    })();
+  }, [mounted, isEvmConnected, evmAddress, walletClient, isAztecConnected, setAztecConnected, setAztecError]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -177,51 +237,12 @@ export function Layout() {
     }
   }, [fetchBalances, mounted, isAztecConnected, isAztecTxPending]);
 
-  const handleConnectAztec = async () => {
-    if (isConnectingAztec) return;
-
-    // Must have MetaMask connected first
-    if (!isEvmConnected || !evmAddress || !walletClient) {
-      setAztecError('Connect MetaMask first');
-      return;
-    }
-
-    setIsConnectingAztec(true);
-    setAztecError(null);
-
-    try {
-      const { connectEmbeddedWallet } = await import('@/lib/aztec/embeddedWallet');
-
-      // Sign message via MetaMask
-      const signMessage = async (message: string): Promise<Hex> => {
-        return await walletClient.signMessage({
-          account: evmAddress,
-          message,
-        }) as Hex;
-      };
-
-      const result = await connectEmbeddedWallet(signMessage, evmAddress);
-
-      console.log('[Layout] Connected embedded wallet, address:', result.address);
-      setAztecConnected(result.address, result.wallet);
-    } catch (error: any) {
-      console.error('[Layout] Aztec connection failed:', error);
-      setAztecError(error.message || 'Failed to connect');
-    } finally {
-      setIsConnectingAztec(false);
-    }
-  };
-
-  const handleDisconnectAztec = async () => {
+  const handleDisconnect = async () => {
     try {
       const { disconnectEmbeddedWallet } = await import('@/lib/aztec/embeddedWallet');
       await disconnectEmbeddedWallet();
     } catch (e) {}
     disconnectAztec();
-  };
-
-  const handleDisconnectAll = async () => {
-    await handleDisconnectAztec();
     disconnectEvm();
   };
 
@@ -240,8 +261,6 @@ export function Layout() {
     );
   }
 
-  const anyConnected = isAztecConnected || isEvmConnected;
-
   return (
     <div className="min-h-screen bg-black text-gray-300 font-mono relative">
       <div className="starfield" />
@@ -250,12 +269,11 @@ export function Layout() {
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
             <a href="/" className="text-white hover:opacity-80">zkzkp2p</a>
-            <span className="text-gray-800">|</span>
-            {/* Base wallet (MetaMask) */}
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">base:</span>
-              {isEvmConnected ? (
-                <>
+            {isEvmConnected && (
+              <>
+                <span className="text-gray-800">|</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-600">base:</span>
                   <button
                     onClick={() => copyToClipboard(evmAddress, 'base')}
                     className="text-sm hover:text-white cursor-pointer transition-colors"
@@ -263,66 +281,28 @@ export function Layout() {
                   >
                     {copiedAddress === 'base' ? 'copied!' : shortenAddress(evmAddress || '')}
                   </button>
-                  <button
-                    onClick={() => disconnectEvm()}
-                    className="text-xs text-gray-500 hover:text-red-400 border border-gray-700 hover:border-red-400 px-1.5 py-0.5 rounded transition-colors"
-                    title="Disconnect Base"
-                  >
-                    disconnect
-                  </button>
-                </>
-              ) : (
-                <ConnectButton.Custom>
-                  {({ openConnectModal }) => (
+                </div>
+                <span className="text-gray-800">|</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-600">aztec:</span>
+                  {isAztecConnected ? (
                     <button
-                      onClick={openConnectModal}
-                      className="text-xs border border-gray-700 px-2 py-1 hover:border-gray-500 hover:text-white transition-colors"
+                      onClick={() => copyToClipboard(aztecAddress, 'aztec')}
+                      className="text-sm hover:text-white cursor-pointer transition-colors"
+                      title="Click to copy full address"
                     >
-                      connect
+                      {copiedAddress === 'aztec' ? 'copied!' : shortenAddress(aztecAddress || '')}
                     </button>
+                  ) : (isConnectingAztec || isAutoReconnecting) ? (
+                    <span className="text-xs text-gray-500 animate-pulse">setting up...</span>
+                  ) : aztecError ? (
+                    <span className="text-xs text-red-400 truncate max-w-[200px]" title={aztecError}>{aztecError}</span>
+                  ) : (
+                    <span className="text-xs text-gray-600">--</span>
                   )}
-                </ConnectButton.Custom>
-              )}
-            </div>
-            <span className="text-gray-800">|</span>
-            {/* Aztec wallet (derived from MetaMask) */}
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">aztec:</span>
-              {isAztecConnected ? (
-                <>
-                  <button
-                    onClick={() => copyToClipboard(aztecAddress, 'aztec')}
-                    className="text-sm hover:text-white cursor-pointer transition-colors"
-                    title="Click to copy full address"
-                  >
-                    {copiedAddress === 'aztec' ? 'copied!' : shortenAddress(aztecAddress || '')}
-                  </button>
-                  <button
-                    onClick={handleDisconnectAztec}
-                    className="text-xs text-gray-500 hover:text-red-400 border border-gray-700 hover:border-red-400 px-1.5 py-0.5 rounded transition-colors"
-                    title="Disconnect Aztec"
-                  >
-                    disconnect
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button
-                    onClick={handleConnectAztec}
-                    disabled={isConnectingAztec || !isEvmConnected}
-                    className="text-xs border border-gray-700 px-2 py-1 hover:border-gray-500 hover:text-white transition-colors disabled:opacity-50"
-                    title={!isEvmConnected ? 'Connect MetaMask first' : aztecError || undefined}
-                  >
-                    {isConnectingAztec ? 'connecting...' : 'derive'}
-                  </button>
-                  {aztecError && (
-                    <span className="text-xs text-red-400 max-w-[200px] truncate" title={aztecError}>
-                      {aztecError}
-                    </span>
-                  )}
-                </>
-              )}
-            </div>
+                </div>
+              </>
+            )}
           </div>
           <div className="flex items-center gap-4">
             <a
@@ -357,7 +337,7 @@ export function Layout() {
                 </button>
               </span>
             )}
-            {!anyConnected && (
+            {!isEvmConnected && (
               <ConnectButton.Custom>
                 {({ openConnectModal }) => (
                   <button
@@ -369,12 +349,12 @@ export function Layout() {
                 )}
               </ConnectButton.Custom>
             )}
-            {anyConnected && (
+            {isEvmConnected && (
               <button
-                onClick={handleDisconnectAll}
-                className="text-xs text-gray-600 hover:text-red-400"
+                onClick={handleDisconnect}
+                className="text-xs text-gray-500 hover:text-red-400 border border-gray-700 hover:border-red-400 px-1.5 py-0.5 rounded transition-colors"
               >
-                disconnect all
+                disconnect
               </button>
             )}
           </div>
@@ -383,7 +363,7 @@ export function Layout() {
 
       {/* Main Content */}
       <main className="max-w-6xl mx-auto px-4 py-8 relative z-10">
-        {!anyConnected ? (
+        {!isEvmConnected ? (
           <div className="flex-1 flex flex-col items-center justify-center py-24 px-4">
             <div className="max-w-md text-center space-y-6">
               <img
@@ -403,14 +383,7 @@ export function Layout() {
                 </a>
               </p>
               <p className="text-xs text-gray-600">
-                connect your metamask wallet to get started
-              </p>
-              <p className="text-xs text-gray-700">
-                requires{' '}
-                <a href="https://metamask.io" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-400">
-                  metamask
-                </a>
-                {' — controls both Base and Aztec wallets'}
+                connect your wallet to get started
               </p>
             </div>
             <footer className="mt-auto pt-12 pb-6">
