@@ -375,8 +375,8 @@ export function PrivateAccount({
       console.log('[PrivateAccount] Transferring', publicBalance.toString(), 'from public to private');
 
       // Use the embedded wallet to call transfer_public_to_private
-      const { AztecAddress } = await import('@aztec/aztec.js');
-      const { Contract } = await import('@aztec/aztec.js');
+      const { AztecAddress } = await import('@aztec/aztec.js/addresses');
+      const { Contract } = await import('@aztec/aztec.js/contracts');
 
       const tokenAddr = AztecAddress.fromString(TOKENS.aztec.address);
       const userAddr = AztecAddress.fromString(aztecAddress);

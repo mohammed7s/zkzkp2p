@@ -9,7 +9,7 @@ interface WalletState {
   // Aztec (L2)
   aztecAddress: string | null;
   isAztecConnected: boolean;
-  aztecWallet: any | null; // BrowserEmbeddedWallet (use any to avoid import issues)
+  aztecWallet: any | null; // EmbeddedWallet (use any to avoid import issues)
   aztecError: string | null;
 
   // Transaction state - used to pause balance polling during txs

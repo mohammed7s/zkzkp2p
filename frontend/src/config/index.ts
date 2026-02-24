@@ -5,18 +5,12 @@
 
 // ==================== ENVIRONMENT VALIDATION ====================
 
-// Only token addresses are required for Substance bridge
-const REQUIRED_ENV_VARS = [
-  'NEXT_PUBLIC_AZTEC_TOKEN_ADDRESS',
-  'NEXT_PUBLIC_BASE_TOKEN_ADDRESS',
-] as const;
-
 // Validate required env vars on load (client-side only)
+// Note: Next.js only inlines NEXT_PUBLIC_* with static string literals,
+// so we check the actual resolved values, not dynamic process.env[key].
 if (typeof window !== 'undefined') {
-  const missing = REQUIRED_ENV_VARS.filter(key => !process.env[key]);
-  if (missing.length > 0) {
-    console.error('[Config] Missing required environment variables:', missing);
-    console.error('[Config] Check your .env.local file');
+  if (!process.env.NEXT_PUBLIC_AZTEC_TOKEN_ADDRESS || !process.env.NEXT_PUBLIC_BASE_TOKEN_ADDRESS) {
+    console.error('[Config] Missing required environment variables. Check your .env.local file');
   }
 }
 

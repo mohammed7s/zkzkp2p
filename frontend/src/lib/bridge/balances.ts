@@ -42,7 +42,7 @@ export async function getBaseUSDCBalance(
  * Get private USDC balance on Aztec via embedded wallet's PXE
  */
 export async function getAztecPrivateBalance(
-  aztecWallet: any, // BrowserEmbeddedWallet (Wallet interface)
+  aztecWallet: any, // EmbeddedWallet (Wallet interface)
   aztecAddress: string
 ): Promise<bigint | null> {
   if (!TOKENS.aztec.address) {
@@ -61,7 +61,7 @@ export async function getAztecPrivateBalance(
     }
 
     // Import AztecAddress for proper type handling
-    const { AztecAddress } = await import('@aztec/aztec.js');
+    const { AztecAddress } = await import('@aztec/aztec.js/addresses');
     const tokenAddr = AztecAddress.fromString(TOKENS.aztec.address);
     const userAddr = AztecAddress.fromString(aztecAddress);
 
@@ -84,7 +84,7 @@ export async function getAztecPrivateBalance(
  * Get public USDC balance on Aztec via embedded wallet's PXE
  */
 export async function getAztecPublicBalance(
-  aztecWallet: any, // BrowserEmbeddedWallet (Wallet interface)
+  aztecWallet: any, // EmbeddedWallet (Wallet interface)
   aztecAddress: string
 ): Promise<bigint | null> {
   if (!TOKENS.aztec.address) {
@@ -98,7 +98,7 @@ export async function getAztecPublicBalance(
       return null;
     }
 
-    const { AztecAddress } = await import('@aztec/aztec.js');
+    const { AztecAddress } = await import('@aztec/aztec.js/addresses');
     const tokenAddr = AztecAddress.fromString(TOKENS.aztec.address);
     const userAddr = AztecAddress.fromString(aztecAddress);
 

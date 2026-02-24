@@ -39,6 +39,7 @@ export function Layout() {
     isAztecConnected,
     aztecAddress,
     aztecWallet,
+    aztecError,
     isAztecTxPending,
     disconnectAztec,
     setAztecConnected,
@@ -204,6 +205,7 @@ export function Layout() {
       console.log('[Layout] Connected embedded wallet, address:', result.address);
       setAztecConnected(result.address, result.wallet);
     } catch (error: any) {
+      console.error('[Layout] Aztec connection failed:', error);
       setAztecError(error.message || 'Failed to connect');
     } finally {
       setIsConnectingAztec(false);
@@ -263,10 +265,10 @@ export function Layout() {
                   </button>
                   <button
                     onClick={() => disconnectEvm()}
-                    className="text-xs text-gray-700 hover:text-red-400 transition-colors"
+                    className="text-xs text-gray-500 hover:text-red-400 border border-gray-700 hover:border-red-400 px-1.5 py-0.5 rounded transition-colors"
                     title="Disconnect Base"
                   >
-                    x
+                    disconnect
                   </button>
                 </>
               ) : (
@@ -297,21 +299,28 @@ export function Layout() {
                   </button>
                   <button
                     onClick={handleDisconnectAztec}
-                    className="text-xs text-gray-700 hover:text-red-400 transition-colors"
+                    className="text-xs text-gray-500 hover:text-red-400 border border-gray-700 hover:border-red-400 px-1.5 py-0.5 rounded transition-colors"
                     title="Disconnect Aztec"
                   >
-                    x
+                    disconnect
                   </button>
                 </>
               ) : (
-                <button
-                  onClick={handleConnectAztec}
-                  disabled={isConnectingAztec || !isEvmConnected}
-                  className="text-xs border border-gray-700 px-2 py-1 hover:border-gray-500 hover:text-white transition-colors disabled:opacity-50"
-                  title={!isEvmConnected ? 'Connect MetaMask first' : undefined}
-                >
-                  {isConnectingAztec ? '...' : 'derive'}
-                </button>
+                <>
+                  <button
+                    onClick={handleConnectAztec}
+                    disabled={isConnectingAztec || !isEvmConnected}
+                    className="text-xs border border-gray-700 px-2 py-1 hover:border-gray-500 hover:text-white transition-colors disabled:opacity-50"
+                    title={!isEvmConnected ? 'Connect MetaMask first' : aztecError || undefined}
+                  >
+                    {isConnectingAztec ? 'connecting...' : 'derive'}
+                  </button>
+                  {aztecError && (
+                    <span className="text-xs text-red-400 max-w-[200px] truncate" title={aztecError}>
+                      {aztecError}
+                    </span>
+                  )}
+                </>
               )}
             </div>
           </div>

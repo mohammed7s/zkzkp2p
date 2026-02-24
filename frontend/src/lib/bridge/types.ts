@@ -13,7 +13,7 @@ import type { Hex, Address, WalletClient, PublicClient } from 'viem'
 
 export interface WalletContext {
   aztec?: {
-    wallet: any // BrowserEmbeddedWallet (Wallet interface)
+    wallet: any // EmbeddedWallet (Wallet interface)
     address: string
   }
   evm?: {

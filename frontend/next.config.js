@@ -4,30 +4,42 @@ const path = require('path');
 
 const nextConfig = {
   reactStrictMode: true,
-  // Transpile Aztec and wallet packages for ESM/CommonJS compatibility
+  // Transpile Aztec packages for ESM/CommonJS compatibility
   transpilePackages: [
-    '@azguardwallet/aztec-wallet',
-    '@azguardwallet/client',
+    '@aztec/wallets',
+    '@aztec/aztec.js',
+    '@aztec/foundation',
+    '@aztec/pxe',
+    '@aztec/kv-store',
+    '@aztec/wallet-sdk',
+    '@aztec/stdlib',
+    '@aztec/bb-prover',
+    '@aztec/accounts',
+    '@aztec/entrypoints',
+    '@aztec/protocol-contracts',
+    '@aztec/simulator',
   ],
-  // Don't bundle Aztec packages on the server - use native Node.js require
-  // This prevents WASM worker bundling issues in API routes
-  experimental: {
-    serverComponentsExternalPackages: [
-      '@aztec/aztec.js',
-      '@aztec/foundation',
-      '@aztec/bb.js',
-      '@aztec/circuits.js',
-    ],
+  // Cross-Origin headers required for SharedArrayBuffer (used by bb.js WASM)
+  async headers() {
+    return [
+      {
+        source: '/(.*)',
+        headers: [
+          {
+            key: 'Cross-Origin-Embedder-Policy',
+            value: 'require-corp',
+          },
+          {
+            key: 'Cross-Origin-Opener-Policy',
+            value: 'same-origin',
+          },
+        ],
+      },
+    ];
   },
   webpack: (config, { isServer }) => {
-    // Fix for @azguardwallet/client exports field issue
-    // The package has "default" before "types" which violates Node.js resolution
     config.resolve.alias = {
       ...config.resolve.alias,
-      '@azguardwallet/client': path.resolve(
-        __dirname,
-        'node_modules/@azguardwallet/client/dist/index.js'
-      ),
       // Resolve SDK from vendored copy
       '@substancelabs/aztec-evm-bridge-sdk': path.resolve(
         __dirname,
@@ -53,7 +65,6 @@ const nextConfig = {
         fs: false,
         net: false,
         tls: false,
-        // React Native modules not needed in browser
         '@react-native-async-storage/async-storage': false,
       };
 
@@ -64,6 +75,13 @@ const nextConfig = {
           process: 'process/browser',
         })
       );
+
+      // Enable WASM support for bb.js/bb-prover
+      config.experiments = {
+        ...config.experiments,
+        asyncWebAssembly: true,
+        layers: true,
+      };
     }
 
     return config;

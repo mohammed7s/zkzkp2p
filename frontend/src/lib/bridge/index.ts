@@ -44,7 +44,7 @@ import { base } from 'viem/chains'
  * Create a Bridge instance configured for zkzkp2p
  */
 export async function createBridge(params: {
-  aztecWallet?: any // BrowserEmbeddedWallet (Wallet interface)
+  aztecWallet?: any // EmbeddedWallet (Wallet interface)
   evmProvider?: any
 }): Promise<Bridge> {
   const { aztecWallet, evmProvider } = params

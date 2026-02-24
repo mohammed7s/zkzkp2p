@@ -1,12 +1,13 @@
 /**
  * Embedded Aztec Wallet via @aztec/wallets
  *
- * Uses BrowserEmbeddedWallet which runs a local PXE in the browser.
+ * Uses EmbeddedWallet which runs a local PXE in the browser.
  * Keys are derived from a MetaMask personal_sign signature, so
  * the user only needs MetaMask — no separate Aztec wallet extension.
  */
 
-import { BrowserEmbeddedWallet } from '@aztec/wallets/embedded';
+import { EmbeddedWallet } from '@aztec/wallets/embedded';
+import { BarretenbergSync } from '@aztec/bb.js';
 import { Fr } from '@aztec/aztec.js/fields';
 import { keccak256, encodePacked, type Hex } from 'viem';
 import { CHAINS } from '@/config';
@@ -17,7 +18,7 @@ const DOMAIN = 'zkzkp2p-aztec';
 // Cached wallet instance
 let cachedWallet: {
   address: string;
-  wallet: BrowserEmbeddedWallet;
+  wallet: EmbeddedWallet;
 } | null = null;
 
 /**
@@ -38,7 +39,8 @@ export function getAztecDerivationMessage(mainAddress: string): string {
  */
 export function deriveAztecSecret(signature: Hex): Fr {
   const hash = keccak256(encodePacked(['string', 'bytes'], [DOMAIN, signature]));
-  return Fr.fromString(hash);
+  // keccak256 output can exceed BN254 field modulus, so reduce
+  return Fr.fromBufferReduce(Buffer.from(hash.slice(2), 'hex'));
 }
 
 /**
@@ -46,7 +48,7 @@ export function deriveAztecSecret(signature: Hex): Fr {
  */
 export function deriveSalt(address: string): Fr {
   const hash = keccak256(encodePacked(['string', 'address'], [DOMAIN + '-salt', address as Hex]));
-  return Fr.fromString(hash);
+  return Fr.fromBufferReduce(Buffer.from(hash.slice(2), 'hex'));
 }
 
 /**
@@ -59,12 +61,12 @@ export function deriveSigningKey(secret: Fr): Buffer {
 }
 
 /**
- * Connect to Aztec using MetaMask-derived keys via BrowserEmbeddedWallet.
+ * Connect to Aztec using MetaMask-derived keys via EmbeddedWallet.
  *
  * Flow:
  * 1. MetaMask personal_sign → signature
  * 2. keccak256(encodePacked("zkzkp2p-aztec", signature)) → Fr secret
- * 3. BrowserEmbeddedWallet.create(nodeUrl) → embedded wallet with local PXE
+ * 3. EmbeddedWallet.create(nodeUrl) → embedded wallet with local PXE
  * 4. wallet.createECDSAKAccount(secret, salt, signingKey) → Aztec account
  * 5. Return the wallet (implements Wallet interface)
  */
@@ -72,7 +74,7 @@ export async function connectEmbeddedWallet(
   signMessage: (message: string) => Promise<Hex>,
   mainAddress: string
 ): Promise<{
-  wallet: BrowserEmbeddedWallet;
+  wallet: EmbeddedWallet;
   address: string;
 }> {
   // Return cached wallet if same address
@@ -84,26 +86,55 @@ export async function connectEmbeddedWallet(
   }
 
   // Step 1: Get signature from MetaMask
+  console.log('[EmbeddedWallet] Step 1: Requesting MetaMask signature...');
   const message = getAztecDerivationMessage(mainAddress);
   const signature = await signMessage(message);
+  console.log('[EmbeddedWallet] Step 1 complete: Got signature');
 
   // Step 2: Derive secret, salt, and signing key
+  console.log('[EmbeddedWallet] Step 2: Deriving keys...');
   const secret = deriveAztecSecret(signature);
   const salt = deriveSalt(mainAddress);
   const signingKey = deriveSigningKey(secret);
+  console.log('[EmbeddedWallet] Step 2 complete: Keys derived');
 
-  // Step 3: Create BrowserEmbeddedWallet (starts local PXE)
+  // Step 3: Create EmbeddedWallet (starts local PXE)
   const nodeUrl = CHAINS.aztec.nodeUrl;
-  console.log('[EmbeddedWallet] Creating wallet with node:', nodeUrl);
-  const wallet = await BrowserEmbeddedWallet.create(nodeUrl);
+  console.log('[EmbeddedWallet] Step 3: Creating EmbeddedWallet with node:', nodeUrl);
+  console.log('[EmbeddedWallet] Environment check:', {
+    crossOriginIsolated: typeof self !== 'undefined' ? (self as any).crossOriginIsolated : 'N/A',
+    sharedArrayBuffer: typeof SharedArrayBuffer !== 'undefined',
+    hardwareConcurrency: typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : 'N/A',
+  });
+  console.log('[EmbeddedWallet] This may take a while (PXE init + WASM setup)...');
+
+  // Pre-initialize BarretenbergSync with logging so we can see what bb.js is doing.
+  // Since it's a singleton, later calls from PXE will reuse this instance.
+  console.log('[EmbeddedWallet] Pre-initializing BarretenbergSync...');
+  try {
+    await BarretenbergSync.initSingleton({
+      logger: (msg: string) => console.log('[bb.js]', msg),
+    });
+    console.log('[EmbeddedWallet] BarretenbergSync initialized successfully');
+  } catch (e: any) {
+    console.error('[EmbeddedWallet] BarretenbergSync init FAILED:', e);
+    console.error('[EmbeddedWallet] This is the WASM crash. See bb.js logs above for details.');
+    throw new Error(`bb.js WASM initialization failed: ${e.message || 'proc_exit called'}`);
+  }
+
+  const t0 = Date.now();
+  const wallet = await EmbeddedWallet.create(nodeUrl);
+  console.log('[EmbeddedWallet] Step 3 complete: Wallet created in', Date.now() - t0, 'ms');
 
   // Step 4: Create ECDSA K account
-  console.log('[EmbeddedWallet] Creating ECDSA K account...');
+  console.log('[EmbeddedWallet] Step 4: Creating ECDSA K account...');
+  const t1 = Date.now();
   const account = await wallet.createECDSAKAccount(secret, salt, signingKey);
+  console.log('[EmbeddedWallet] Step 4 complete: Account created in', Date.now() - t1, 'ms');
 
-  // Get the account address
-  const aztecAddress = account.getAddress().toString();
-  console.log('[EmbeddedWallet] Account address:', aztecAddress);
+  // Get the account address (AccountManager exposes .address, not .getAddress())
+  const aztecAddress = account.address.toString();
+  console.log('[EmbeddedWallet] Done! Account address:', aztecAddress);
 
   // Cache the wallet
   cachedWallet = {
@@ -134,7 +165,7 @@ export async function disconnectEmbeddedWallet(): Promise<void> {
 /**
  * Get the cached wallet instance (if connected)
  */
-export function getCachedWallet(): BrowserEmbeddedWallet | null {
+export function getCachedWallet(): EmbeddedWallet | null {
   return cachedWallet?.wallet ?? null;
 }
 
