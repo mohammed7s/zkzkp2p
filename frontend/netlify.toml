@@ -8,9 +8,6 @@
 [[plugins]]
   package = "@netlify/plugin-nextjs"
 
-# Required for SharedArrayBuffer (bb.js WASM in Aztec embedded wallet)
-[[headers]]
-  for = "/*"
-  [headers.values]
-    Cross-Origin-Embedder-Policy = "require-corp"
-    Cross-Origin-Opener-Policy = "same-origin"
+# No COOP/COEP headers — Privy's iframe requires unrestricted opener policy.
+# bb.js BarretenbergSync needs SharedArrayBuffer (requires COOP: same-origin)
+# but that blocks Privy. PXE runs server-side to avoid this conflict.

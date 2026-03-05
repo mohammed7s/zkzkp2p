@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useFlowStore } from '@/stores/flowStore';
-import { formatTokenAmount } from '@/lib/bridge';
+import { formatTokenAmount } from '@/lib/bridge/format';
 
 function timeAgo(ts: number): string {
   const diff = Date.now() - ts;

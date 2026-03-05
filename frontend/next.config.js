@@ -19,24 +19,9 @@ const nextConfig = {
     '@aztec/protocol-contracts',
     '@aztec/simulator',
   ],
-  // Cross-Origin headers required for SharedArrayBuffer (used by bb.js WASM)
-  async headers() {
-    return [
-      {
-        source: '/(.*)',
-        headers: [
-          {
-            key: 'Cross-Origin-Embedder-Policy',
-            value: 'require-corp',
-          },
-          {
-            key: 'Cross-Origin-Opener-Policy',
-            value: 'same-origin',
-          },
-        ],
-      },
-    ];
-  },
+  // No COOP/COEP headers — Privy's iframe requires it.
+  // bb.js BarretenbergSync needs SharedArrayBuffer (COOP: same-origin) but that
+  // blocks Privy. This is a known conflict. See embeddedWallet.ts for workaround.
   webpack: (config, { isServer }) => {
     config.resolve.alias = {
       ...config.resolve.alias,

@@ -1,9 +1,10 @@
-import { getDefaultConfig } from '@rainbow-me/rainbowkit';
-import { base } from 'wagmi/chains';
+import { createConfig } from '@privy-io/wagmi';
+import { http } from 'viem';
+import { base } from 'viem/chains';
 
-export const config = getDefaultConfig({
-  appName: 'zkzkp2p',
-  projectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || 'demo',
+export const config = createConfig({
   chains: [base],
-  ssr: true,
+  transports: {
+    [base.id]: http(),
+  },
 });

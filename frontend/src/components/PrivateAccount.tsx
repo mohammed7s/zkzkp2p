@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useAccount, useWalletClient, usePublicClient } from 'wagmi';
-import { ConnectButton } from '@rainbow-me/rainbowkit';
+import { usePrivy } from '@privy-io/react-auth';
 import { useWalletStore } from '@/stores/walletStore';
 import { useFlowStore } from '@/stores/flowStore';
 import {
@@ -115,6 +115,7 @@ export function PrivateAccount({
   }, []);
 
   const { address: evmAddress } = useAccount();
+  const { login } = usePrivy();
   const { aztecAddress, aztecWallet, setAztecTxPending } = useWalletStore();
   const { data: walletClient } = useWalletClient();
   const publicClient = usePublicClient();
@@ -484,16 +485,12 @@ export function PrivateAccount({
           {!isEvmConnected ? (
             <div className="space-y-3">
               <p className="text-xs text-gray-600">connect base wallet to bridge</p>
-              <ConnectButton.Custom>
-                {({ openConnectModal }) => (
-                  <button
-                    onClick={openConnectModal}
-                    className="w-full py-2 border border-blue-900 hover:border-blue-500 text-blue-400 text-sm"
-                  >
-                    connect base wallet
-                  </button>
-                )}
-              </ConnectButton.Custom>
+              <button
+                onClick={login}
+                className="w-full py-2 border border-blue-900 hover:border-blue-500 text-blue-400 text-sm"
+              >
+                connect base wallet
+              </button>
             </div>
           ) : (
             <div className="space-y-4">

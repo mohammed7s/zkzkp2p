@@ -8,24 +8,6 @@
 import type { Hex } from 'viem'
 import { base } from 'viem/chains'
 
-// Re-export SDK constants for convenience
-export {
-  aztecSepolia,
-  chainsConfig,
-  forwarderAddresses,
-  opStackAnchorRegistryAddresses,
-  ORDER_DATA_TYPE,
-  REFUND_ORDER_TYPE,
-  SETTLE_ORDER_TYPE,
-  PUBLIC_ORDER,
-  PRIVATE_ORDER,
-  OPENED,
-  FILLED,
-  FILLED_PRIVATELY,
-  AZTEC_VERSION,
-  PRIVATE_SENDER,
-} from '@substancelabs/aztec-evm-bridge-sdk'
-
 // =============================================================================
 // Chain Configuration (app-specific)
 // =============================================================================

@@ -1,25 +1,26 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import dynamic from 'next/dynamic';
 import { useAccount, useDisconnect, useWalletClient } from 'wagmi';
-import { ConnectButton } from '@rainbow-me/rainbowkit';
+import { usePrivy, useWallets, useCreateWallet } from '@privy-io/react-auth';
 import { useWalletStore } from '@/stores/walletStore';
 import {
   getBaseUSDCBalance,
   getAztecPrivateBalance,
   getAztecPublicBalance,
-  formatTokenAmount,
-  TOKENS,
-} from '@/lib/bridge';
+} from '@/lib/bridge/balances';
+import { formatTokenAmount } from '@/lib/bridge/format';
+import { TOKENS } from '@/lib/bridge/config';
 import { usePublicClient } from 'wagmi';
-import { CreateDeposit } from './CreateDeposit';
-import { TransactionHistory } from './TransactionHistory';
-import { PrivateAccount } from './PrivateAccount';
 import type { Hex } from 'viem';
 
 const DOCS_URL = '/docs';
 const GITHUB_URL = 'https://github.com/mohammed7s/zkzkp2p';
 const BALANCE_CACHE_PREFIX = 'zkzkp2p-balance-cache';
+const CreateDeposit = dynamic(() => import('./CreateDeposit').then((m) => m.CreateDeposit), { ssr: false });
+const PrivateAccount = dynamic(() => import('./PrivateAccount').then((m) => m.PrivateAccount), { ssr: false });
+const TransactionHistory = dynamic(() => import('./TransactionHistory').then((m) => m.TransactionHistory), { ssr: false });
 
 function getBalanceCacheKey(aztecAddress?: string | null, evmAddress?: string | null): string | null {
   if (!aztecAddress && !evmAddress) return null;
@@ -45,11 +46,51 @@ export function Layout() {
     setAztecConnected,
     setAztecError
   } = useWalletStore();
+  const { login, logout, ready: privyReady, authenticated, user } = usePrivy();
+  const { wallets: privyWallets } = useWallets();
+  const { createWallet } = useCreateWallet();
   const { disconnect: disconnectEvm } = useDisconnect();
   const publicClient = usePublicClient();
   const { data: walletClient } = useWalletClient();
 
   const [mounted, setMounted] = useState(false);
+
+  // Debug: log Privy + wagmi state
+  useEffect(() => {
+    if (!mounted) return;
+    console.log('[Layout] State:', {
+      privyReady,
+      authenticated,
+      privyUser: user?.id,
+      privyWallets: privyWallets.map(w => ({ address: w.address, type: w.walletClientType, chain: w.chainId })),
+      wagmiConnected: isEvmConnected,
+      wagmiAddress: evmAddress,
+      walletClientReady: !!walletClient,
+    });
+  }, [mounted, privyReady, authenticated, user, privyWallets, isEvmConnected, evmAddress, walletClient]);
+
+  // Fallback: if authenticated but no embedded wallet exists, create one explicitly
+  const creatingWalletRef = useRef(false);
+  useEffect(() => {
+    if (!mounted || !privyReady || !authenticated || creatingWalletRef.current) return;
+    const hasEmbeddedWallet = privyWallets.some(w => w.walletClientType === 'privy');
+    if (!hasEmbeddedWallet && privyWallets.length === 0) {
+      creatingWalletRef.current = true;
+      console.log('[Layout] No embedded wallet found, creating...');
+      createWallet()
+        .then((wallet) => {
+          console.log('[Layout] Embedded wallet created:', wallet.address);
+        })
+        .catch((err) => {
+          // May fail if wallet already exists or is being created — that's fine
+          console.warn('[Layout] createWallet fallback:', err.message || err);
+        })
+        .finally(() => {
+          creatingWalletRef.current = false;
+        });
+    }
+  }, [mounted, privyReady, authenticated, privyWallets, createWallet]);
+
   const [privateBalance, setPrivateBalance] = useState<bigint>(0n);
   const [publicBalance, setPublicBalance] = useState<bigint>(0n);
   const [baseBalance, setBaseBalance] = useState<bigint>(0n);
@@ -75,20 +116,40 @@ export function Layout() {
     setMounted(true);
   }, []);
 
-  // Auto-connect Aztec when MetaMask connects:
+  // Auto-connect Aztec when EVM wallet connects (MetaMask or Privy embedded):
   // - If cached keys exist in sessionStorage → reconnect silently (no popup)
-  // - If no cached keys and walletClient ready → derive via MetaMask signature (first time)
-  // Uses a ref guard (not state) to prevent the state update from cancelling the async work.
+  // - If no cached keys → derive via wallet signature (first time)
+  // For signing, use walletClient (MetaMask) or Privy wallet provider (embedded).
+  // useWalletClient() often returns null for Privy embedded wallets, so we fall back
+  // to privyWallets[].getEthereumProvider() which supports personal_sign directly.
   useEffect(() => {
     if (!mounted || !isEvmConnected || !evmAddress || isAztecConnected) return;
     if (connectingRef.current) return;
+
+    // Check for cached keys synchronously
+    const SESSION_KEY = 'zkzkp2p-aztec-keys';
+    let hasCached = false;
+    try {
+      const raw = sessionStorage.getItem(SESSION_KEY);
+      if (raw) {
+        const data = JSON.parse(raw);
+        hasCached = data.address === evmAddress.toLowerCase();
+      }
+    } catch {}
+
+    // Find a Privy embedded wallet as fallback signer
+    const privyWallet = privyWallets.find(w => w.address?.toLowerCase() === evmAddress.toLowerCase());
+
+    // If no cached keys, we need either walletClient or a Privy wallet to sign
+    if (!hasCached && !walletClient && !privyWallet) return;
+
     connectingRef.current = true;
 
     (async () => {
       const { hasCachedKeys, reconnectEmbeddedWallet, connectEmbeddedWallet } = await import('@/lib/aztec/embeddedWallet');
 
       if (hasCachedKeys(evmAddress)) {
-        // Reconnect from cached keys — no MetaMask popup
+        // Reconnect from cached keys — no signature popup
         console.log('[Layout] Auto-reconnecting Aztec wallet from cached keys...');
         setIsAutoReconnecting(true);
         try {
@@ -103,18 +164,32 @@ export function Layout() {
           setIsAutoReconnecting(false);
           connectingRef.current = false;
         }
-      } else if (walletClient) {
-        // First time — derive via MetaMask signature
+      } else {
+        // First time — derive via wallet signature
         console.log('[Layout] First connection — deriving Aztec wallet...');
         setIsConnectingAztec(true);
         setAztecError(null);
         try {
-          const signMessage = async (message: string): Promise<Hex> => {
-            return await walletClient.signMessage({
-              account: evmAddress,
-              message,
-            }) as Hex;
-          };
+          let signMessage: (message: string) => Promise<Hex>;
+
+          if (walletClient) {
+            // MetaMask / injected wallet path
+            signMessage = async (message: string): Promise<Hex> => {
+              return await walletClient.signMessage({ account: evmAddress, message }) as Hex;
+            };
+          } else if (privyWallet) {
+            // Privy embedded wallet path — use EIP-1193 provider directly
+            const provider = await privyWallet.getEthereumProvider();
+            signMessage = async (message: string): Promise<Hex> => {
+              return await provider.request({
+                method: 'personal_sign',
+                params: [message, evmAddress],
+              }) as Hex;
+            };
+          } else {
+            throw new Error('No signer available');
+          }
+
           const result = await connectEmbeddedWallet(signMessage, evmAddress);
           console.log('[Layout] Derived Aztec wallet, address:', result.address);
           setAztecConnected(result.address, result.wallet);
@@ -125,12 +200,9 @@ export function Layout() {
           setIsConnectingAztec(false);
           connectingRef.current = false;
         }
-      } else {
-        // walletClient not ready yet — will retry when it becomes available
-        connectingRef.current = false;
       }
     })();
-  }, [mounted, isEvmConnected, evmAddress, walletClient, isAztecConnected, setAztecConnected, setAztecError]);
+  }, [mounted, isEvmConnected, evmAddress, walletClient, privyWallets, isAztecConnected, setAztecConnected, setAztecError]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -244,6 +316,7 @@ export function Layout() {
     } catch (e) {}
     disconnectAztec();
     disconnectEvm();
+    try { await logout(); } catch (e) {}
   };
 
   // Prevent SSR
@@ -269,7 +342,7 @@ export function Layout() {
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
             <a href="/" className="text-white hover:opacity-80">zkzkp2p</a>
-            {isEvmConnected && (
+            {(authenticated || isEvmConnected) && (
               <>
                 <span className="text-gray-800">|</span>
                 <div className="flex items-center gap-2">
@@ -337,19 +410,15 @@ export function Layout() {
                 </button>
               </span>
             )}
-            {!isEvmConnected && (
-              <ConnectButton.Custom>
-                {({ openConnectModal }) => (
-                  <button
-                    onClick={openConnectModal}
-                    className="px-4 py-1.5 bg-white text-black text-sm rounded-full hover:bg-gray-200 disabled:opacity-50 transition-colors"
-                  >
-                    login
-                  </button>
-                )}
-              </ConnectButton.Custom>
+            {!authenticated && !isEvmConnected && (
+              <button
+                onClick={login}
+                className="px-4 py-1.5 bg-white text-black text-sm rounded-full hover:bg-gray-200 disabled:opacity-50 transition-colors"
+              >
+                login
+              </button>
             )}
-            {isEvmConnected && (
+            {(authenticated || isEvmConnected) && (
               <button
                 onClick={handleDisconnect}
                 className="text-xs text-gray-500 hover:text-red-400 border border-gray-700 hover:border-red-400 px-1.5 py-0.5 rounded transition-colors"
@@ -363,7 +432,7 @@ export function Layout() {
 
       {/* Main Content */}
       <main className="max-w-6xl mx-auto px-4 py-8 relative z-10">
-        {!isEvmConnected ? (
+        {!authenticated && !isEvmConnected ? (
           <div className="flex-1 flex flex-col items-center justify-center py-24 px-4">
             <div className="max-w-md text-center space-y-6">
               <img
@@ -399,20 +468,37 @@ export function Layout() {
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-              <CreateDeposit
-                privateBalance={privateBalance}
-                onRefreshBalances={fetchBalances}
-              />
-              <PrivateAccount
-                privateBalance={privateBalance}
-                publicBalance={publicBalance}
-                baseBalance={baseBalance}
-                isEvmConnected={isEvmConnected}
-                onTopUp={fetchBalances}
-              />
-            </div>
-            <TransactionHistory />
+            {!isAztecConnected ? (
+              <div className="border border-gray-900 bg-gray-950/50 p-8 text-center">
+                {(isConnectingAztec || isAutoReconnecting) ? (
+                  <p className="text-sm text-gray-400 animate-pulse">setting up aztec wallet...</p>
+                ) : aztecError ? (
+                  <div className="space-y-2">
+                    <p className="text-sm text-red-400">aztec wallet setup failed</p>
+                    <p className="text-xs text-gray-600">{aztecError}</p>
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-500">waiting for aztec wallet setup...</p>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                  <CreateDeposit
+                    privateBalance={privateBalance}
+                    onRefreshBalances={fetchBalances}
+                  />
+                  <PrivateAccount
+                    privateBalance={privateBalance}
+                    publicBalance={publicBalance}
+                    baseBalance={baseBalance}
+                    isEvmConnected={isEvmConnected}
+                    onTopUp={fetchBalances}
+                  />
+                </div>
+                <TransactionHistory />
+              </>
+            )}
           </>
         )}
       </main>

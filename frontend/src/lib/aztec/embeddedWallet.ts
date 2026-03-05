@@ -7,7 +7,6 @@
  */
 
 import { EmbeddedWallet } from '@aztec/wallets/embedded';
-import { BarretenbergSync } from '@aztec/bb.js';
 import { Fr } from '@aztec/aztec.js/fields';
 import { keccak256, encodePacked, type Hex } from 'viem';
 import { CHAINS } from '@/config';
@@ -206,17 +205,23 @@ async function createWalletWithKeys(
     hardwareConcurrency: typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : 'N/A',
   });
 
-  // Pre-initialize BarretenbergSync with logging so we can see what bb.js is doing.
-  // Since it's a singleton, later calls from PXE will reuse this instance.
-  console.log('[EmbeddedWallet] Pre-initializing BarretenbergSync...');
-  try {
-    await BarretenbergSync.initSingleton({
-      logger: (msg: string) => console.log('[bb.js]', msg),
-    });
-    console.log('[EmbeddedWallet] BarretenbergSync initialized successfully');
-  } catch (e: any) {
-    console.error('[EmbeddedWallet] BarretenbergSync init FAILED:', e);
-    throw new Error(`bb.js WASM initialization failed: ${e.message || 'proc_exit called'}`);
+  // WORKAROUND: bb.js checks `crossOriginIsolated` to decide if SharedArrayBuffer
+  // is available, but modern Chrome (92+) provides SharedArrayBuffer via site isolation
+  // even without COOP/COEP headers. The non-threaded WASM fallback is broken (proc_exit
+  // during _initialize), so we force bb.js to use the threaded path which actually works.
+  if (
+    typeof SharedArrayBuffer !== 'undefined' &&
+    typeof globalThis !== 'undefined' &&
+    !(globalThis as any).crossOriginIsolated
+  ) {
+    try {
+      // Verify SharedArrayBuffer actually works before overriding
+      new SharedArrayBuffer(1);
+      Object.defineProperty(globalThis, 'crossOriginIsolated', { value: true, writable: true, configurable: true });
+      console.log('[EmbeddedWallet] Patched crossOriginIsolated for bb.js (SharedArrayBuffer available via site isolation)');
+    } catch {
+      console.warn('[EmbeddedWallet] SharedArrayBuffer not available, bb.js may fail');
+    }
   }
 
   const t0 = Date.now();
