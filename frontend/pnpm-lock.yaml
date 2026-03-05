@@ -26,6 +26,9 @@ importers:
       '@aztec/kv-store':
         specifier: 4.0.0-devnet.2-patch.1
         version: 4.0.0-devnet.2-patch.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
+      '@aztec/noir-contracts.js':
+        specifier: 4.0.0-devnet.2-patch.1
+        version: 4.0.0-devnet.2-patch.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@aztec/pxe':
         specifier: 4.0.0-devnet.2-patch.1
         version: 4.0.0-devnet.2-patch.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.3.5)
@@ -483,6 +486,10 @@ packages:
 
   '@aztec/noir-contracts.js@3.0.0-devnet.6-patch.1':
     resolution: {integrity: sha512-GP1VX+qm5bkSsGpeekCWaLOAoMPFqpckx/WIqAyxJLlSTS7QuvANEulGJI22IBhktu133CtXXfzjATHPEGbN4g==}
+    engines: {node: '>=20.10'}
+
+  '@aztec/noir-contracts.js@4.0.0-devnet.2-patch.1':
+    resolution: {integrity: sha512-BMyF++ifcnwd6ydcYJ9EmCvA1MEr0XkoAJhVImqUkYGQmGo9qXFlspQ908pz4nsfJ6Id4bz3DlReJFiuufvQAQ==}
     engines: {node: '>=20.10'}
 
   '@aztec/noir-noir_codegen@2.0.3':
@@ -6405,6 +6412,21 @@ snapshots:
       - bufferutil
       - debug
       - encoding
+      - supports-color
+      - typescript
+      - utf-8-validate
+
+  '@aztec/noir-contracts.js@4.0.0-devnet.2-patch.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)':
+    dependencies:
+      '@aztec/aztec.js': 4.0.0-devnet.2-patch.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
+      tslib: 2.8.1
+    transitivePeerDependencies:
+      - '@types/pg'
+      - aws-crt
+      - bufferutil
+      - debug
+      - encoding
+      - pg-native
       - supports-color
       - typescript
       - utf-8-validate
