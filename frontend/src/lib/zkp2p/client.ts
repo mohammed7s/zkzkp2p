@@ -51,7 +51,7 @@ export function createZkp2pClient(walletClient: WalletClient): Zkp2pClient {
     chainId: CHAIN_ID,
     runtimeEnv: RUNTIME_ENV,
     // API key is optional for testnet
-    apiKey: process.env.NEXT_PUBLIC_ZKP2P_API_KEY,
+    apiKey: import.meta.env.NEXT_PUBLIC_ZKP2P_API_KEY,
   });
 }
 

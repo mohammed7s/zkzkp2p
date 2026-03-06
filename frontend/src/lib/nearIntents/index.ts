@@ -181,7 +181,7 @@ export interface SolverConfig {
 }
 
 export function getSolverConfig(): SolverConfig {
-  const aztecAddress = process.env.NEXT_PUBLIC_SOLVER_AZTEC_ADDRESS || '';
+  const aztecAddress = import.meta.env.NEXT_PUBLIC_SOLVER_AZTEC_ADDRESS || '';
   const tokenAddress = CONTRACTS.aztec.token;
   return { aztecAddress, tokenAddress };
 }

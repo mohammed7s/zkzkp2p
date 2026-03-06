@@ -9,7 +9,7 @@
 // Note: Next.js only inlines NEXT_PUBLIC_* with static string literals,
 // so we check the actual resolved values, not dynamic process.env[key].
 if (typeof window !== 'undefined') {
-  if (!process.env.NEXT_PUBLIC_AZTEC_TOKEN_ADDRESS || !process.env.NEXT_PUBLIC_BASE_TOKEN_ADDRESS) {
+  if (!import.meta.env.NEXT_PUBLIC_AZTEC_TOKEN_ADDRESS || !import.meta.env.NEXT_PUBLIC_BASE_TOKEN_ADDRESS) {
     console.error('[Config] Missing required environment variables. Check your .env.local file');
   }
 }
@@ -18,13 +18,13 @@ if (typeof window !== 'undefined') {
 
 export const CHAINS = {
   aztec: {
-    chainId: process.env.NEXT_PUBLIC_AZTEC_CHAIN_ID || '1674512022',
-    nodeUrl: process.env.NEXT_PUBLIC_AZTEC_NODE_URL || 'https://devnet.aztec-labs.com',
+    chainId: import.meta.env.NEXT_PUBLIC_AZTEC_CHAIN_ID || '1674512022',
+    nodeUrl: import.meta.env.NEXT_PUBLIC_AZTEC_NODE_URL || 'https://devnet.aztec-labs.com',
     name: 'Aztec Devnet',
   },
   base: {
-    chainId: parseInt(process.env.NEXT_PUBLIC_BASE_CHAIN_ID || '8453'),
-    rpcUrl: process.env.NEXT_PUBLIC_BASE_RPC_URL || 'https://mainnet.base.org',
+    chainId: parseInt(import.meta.env.NEXT_PUBLIC_BASE_CHAIN_ID || '8453'),
+    rpcUrl: import.meta.env.NEXT_PUBLIC_BASE_RPC_URL || 'https://mainnet.base.org',
     name: 'Base',
   },
 } as const;
@@ -33,21 +33,21 @@ export const CHAINS = {
 
 export const CONTRACTS = {
   aztec: {
-    train: process.env.NEXT_PUBLIC_AZTEC_TRAIN_ADDRESS || '',
-    token: process.env.NEXT_PUBLIC_AZTEC_TOKEN_ADDRESS || '',
+    train: import.meta.env.NEXT_PUBLIC_AZTEC_TRAIN_ADDRESS || '',
+    token: import.meta.env.NEXT_PUBLIC_AZTEC_TOKEN_ADDRESS || '',
   },
   base: {
-    train: process.env.NEXT_PUBLIC_BASE_TRAIN_ADDRESS || '',
-    token: process.env.NEXT_PUBLIC_BASE_TOKEN_ADDRESS || '',
+    train: import.meta.env.NEXT_PUBLIC_BASE_TRAIN_ADDRESS || '',
+    token: import.meta.env.NEXT_PUBLIC_BASE_TOKEN_ADDRESS || '',
   },
 } as const;
 
 // ==================== SOLVER CONFIGURATION ====================
 
 export const SOLVER = {
-  evmAddress: (process.env.NEXT_PUBLIC_SOLVER_EVM_ADDRESS || '') as `0x${string}`,
-  aztecAddress: process.env.NEXT_PUBLIC_SOLVER_AZTEC_ADDRESS || '',
-  apiUrl: process.env.NEXT_PUBLIC_SOLVER_API_URL || 'http://localhost:3001',
+  evmAddress: (import.meta.env.NEXT_PUBLIC_SOLVER_EVM_ADDRESS || '') as `0x${string}`,
+  aztecAddress: import.meta.env.NEXT_PUBLIC_SOLVER_AZTEC_ADDRESS || '',
+  apiUrl: import.meta.env.NEXT_PUBLIC_SOLVER_API_URL || 'http://localhost:3001',
 } as const;
 
 // ==================== TIMING CONFIGURATION ====================

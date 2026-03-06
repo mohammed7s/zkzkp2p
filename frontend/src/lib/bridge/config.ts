@@ -34,7 +34,7 @@ export {
 export const BASE_CHAIN = {
   id: base.id, // 8453
   name: 'Base',
-  rpcUrl: process.env.NEXT_PUBLIC_BASE_RPC_URL || 'https://mainnet.base.org',
+  rpcUrl: import.meta.env.NEXT_PUBLIC_BASE_RPC_URL || 'https://mainnet.base.org',
   viemChain: base,
 } as const
 
@@ -44,12 +44,12 @@ export const BASE_CHAIN = {
 
 export const TOKENS = {
   aztec: {
-    address: (process.env.NEXT_PUBLIC_AZTEC_TOKEN_ADDRESS || '') as Hex,
+    address: (import.meta.env.NEXT_PUBLIC_AZTEC_TOKEN_ADDRESS || '') as Hex,
     symbol: 'USDC',
     decimals: 6,
   },
   base: {
-    address: (process.env.NEXT_PUBLIC_BASE_TOKEN_ADDRESS || '') as Hex,
+    address: (import.meta.env.NEXT_PUBLIC_BASE_TOKEN_ADDRESS || '') as Hex,
     symbol: 'USDC',
     decimals: 6,
   },

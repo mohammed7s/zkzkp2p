@@ -18,7 +18,7 @@ import { createPimlicoClient } from 'permissionless/clients/pimlico';
 // Get RPC URL from env - this should be your Coinbase Paymaster endpoint
 // Format: https://api.developer.coinbase.com/rpc/v1/base/<API_KEY>
 function getPaymasterRpcUrl(): string {
-  const url = process.env.NEXT_PUBLIC_COINBASE_PAYMASTER_RPC_URL;
+  const url = import.meta.env.NEXT_PUBLIC_COINBASE_PAYMASTER_RPC_URL;
   if (!url) {
     throw new Error(
       'NEXT_PUBLIC_COINBASE_PAYMASTER_RPC_URL not set. ' +
@@ -32,7 +32,7 @@ function getPaymasterRpcUrl(): string {
  * Check if paymaster is configured
  */
 export function isPaymasterConfigured(): boolean {
-  return !!process.env.NEXT_PUBLIC_COINBASE_PAYMASTER_RPC_URL;
+  return !!import.meta.env.NEXT_PUBLIC_COINBASE_PAYMASTER_RPC_URL;
 }
 
 /**

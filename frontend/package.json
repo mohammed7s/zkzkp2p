@@ -3,10 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
   },
   "dependencies": {
     "@aztec/accounts": "4.0.0-devnet.2-patch.1",
@@ -26,7 +25,6 @@
     "@substancelabs/aztec-evm-bridge-sdk": "file:./vendor/substance-sdk",
     "@tanstack/react-query": "^5.60.0",
     "@zkp2p/offramp-sdk": "^0.1.0",
-    "next": "^14.2.0",
     "permissionless": "^0.3.4",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
@@ -40,6 +38,7 @@
     "@types/node": "^22.0.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^5.1.4",
     "assert": "^2.1.0",
     "autoprefixer": "^10.4.0",
     "browserify-zlib": "^0.2.0",
@@ -55,7 +54,9 @@
     "tailwindcss": "^3.4.0",
     "typescript": "^5.6.0",
     "url": "^0.11.4",
-    "util": "^0.12.5"
+    "util": "^0.12.5",
+    "vite": "^7.3.1",
+    "vite-plugin-node-polyfills": "^0.25.0"
   },
   "packageManager": "pnpm@10.28.0+sha512.05df71d1421f21399e053fde567cea34d446fa02c76571441bfc1c7956e98e363088982d940465fd34480d4d90a0668bc12362f8aa88000a64e83d0b0e47be48"
 }

@@ -3,7 +3,7 @@ import { base } from 'wagmi/chains';
 
 export const config = getDefaultConfig({
   appName: 'zkzkp2p',
-  projectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || 'demo',
+  projectId: import.meta.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || 'demo',
   chains: [base],
-  ssr: true,
+  ssr: false,
 });
