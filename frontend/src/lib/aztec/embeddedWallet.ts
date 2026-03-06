@@ -232,6 +232,36 @@ async function createWalletWithKeys(
   const aztecAddress = account.address.toString();
   console.log('[EmbeddedWallet] Account address:', aztecAddress);
 
+  // Register token contract (class + instance) so balance queries and transfers work
+  const { CONTRACTS } = await import('@/config');
+  const tokenAddress = CONTRACTS.aztec.token;
+  if (tokenAddress) {
+    try {
+      console.log('[EmbeddedWallet] Registering token contract...');
+      const { TokenContract } = await import('@aztec/noir-contracts.js/Token');
+      const { AztecAddress } = await import('@aztec/aztec.js/addresses');
+      const { createAztecNodeClient } = await import('@aztec/aztec.js/node');
+      const tokenAddr = AztecAddress.fromString(tokenAddress);
+
+      // Fetch the deployed contract instance from the node
+      const nodeClient = createAztecNodeClient(nodeUrl);
+      const contractInstance = await (nodeClient as any).getContract(tokenAddr);
+      if (contractInstance) {
+        await wallet.registerContract(contractInstance, TokenContract.artifact);
+        console.log('[EmbeddedWallet] Token contract registered (class + instance)');
+      } else {
+        console.warn('[EmbeddedWallet] Token contract not found on node. Balance queries may fail.');
+        // Fall back to class-only registration
+        const pxe = (wallet as any).pxe;
+        if (pxe?.registerContractClass) {
+          await pxe.registerContractClass(TokenContract.artifact);
+        }
+      }
+    } catch (e: any) {
+      console.warn('[EmbeddedWallet] Failed to register token contract:', e.message);
+    }
+  }
+
   // Cache the wallet in memory
   cachedWallet = {
     address: mainAddress.toLowerCase(),

@@ -39,41 +39,68 @@ export async function getBaseUSDCBalance(
 }
 
 /**
- * Get private USDC balance on Aztec via embedded wallet's PXE
+ * Call an unconstrained (view) function on the Token contract.
+ * Tries multiple approaches since the SDK API varies across versions.
+ */
+async function callUnconstrained(
+  aztecWallet: any,
+  methodName: string,
+  userAddr: any,
+  tokenAddr: any,
+): Promise<bigint> {
+  const { TokenContract } = await import('@aztec/noir-contracts.js/Token');
+  const token = await TokenContract.at(tokenAddr, aztecWallet);
+  const fn = (token.methods as any)[methodName](userAddr);
+
+  // Log available methods on the function interaction for debugging
+  const fnMethods = Object.getOwnPropertyNames(Object.getPrototypeOf(fn));
+  console.log(`[Aztec] ${methodName} interaction methods:`, fnMethods);
+
+  // Approach 1: .simulate(fromAddress) — unconstrained functions take AztecAddress
+  if (typeof fn.simulate === 'function') {
+    try {
+      const result = await fn.simulate(userAddr);
+      return BigInt(result?.toString() || '0');
+    } catch (e: any) {
+      console.warn(`[Aztec] ${methodName}.simulate(addr) failed:`, e.message);
+    }
+  }
+
+  // Approach 2: .simulate({from: addr})
+  if (typeof fn.simulate === 'function') {
+    try {
+      const result = await fn.simulate({ from: userAddr });
+      return BigInt(result?.toString() || '0');
+    } catch (e: any) {
+      console.warn(`[Aztec] ${methodName}.simulate({from}) failed:`, e.message);
+    }
+  }
+
+  // Approach 3: .view()
+  if (typeof fn.view === 'function') {
+    const result = await fn.view();
+    return BigInt(result?.toString() || '0');
+  }
+
+  throw new Error(`No working simulation method found for ${methodName}`);
+}
+
+/**
+ * Get private USDC balance on Aztec
  */
 export async function getAztecPrivateBalance(
-  aztecWallet: any, // EmbeddedWallet (Wallet interface)
+  aztecWallet: any,
   aztecAddress: string
 ): Promise<bigint | null> {
   if (!TOKENS.aztec.address) {
-    console.error('[Aztec] AZTEC_TOKEN_ADDRESS not configured!')
     throw new Error('Token address not configured')
   }
 
   try {
-    console.log('[Aztec] Fetching private balance...')
-
-    // Use the wallet's PXE to simulate an unconstrained call
-    const pxe = aztecWallet.getNode ? aztecWallet.getNode() : aztecWallet.pxe;
-    if (!pxe) {
-      console.error('[Aztec] Cannot access PXE from wallet');
-      return null;
-    }
-
-    // Import AztecAddress for proper type handling
     const { AztecAddress } = await import('@aztec/aztec.js/addresses');
     const tokenAddr = AztecAddress.fromString(TOKENS.aztec.address);
     const userAddr = AztecAddress.fromString(aztecAddress);
-
-    // Use simulateUnconstrained to call balance_of_private
-    const result = await pxe.simulateUnconstrained(
-      'balance_of_private',
-      [userAddr],
-      tokenAddr,
-      userAddr
-    );
-
-    return BigInt(result?.toString() || '0');
+    return await callUnconstrained(aztecWallet, 'balance_of_private', userAddr, tokenAddr);
   } catch (e) {
     console.error('[Aztec] Failed to fetch private balance:', e);
     return null;
@@ -81,10 +108,10 @@ export async function getAztecPrivateBalance(
 }
 
 /**
- * Get public USDC balance on Aztec via embedded wallet's PXE
+ * Get public USDC balance on Aztec
  */
 export async function getAztecPublicBalance(
-  aztecWallet: any, // EmbeddedWallet (Wallet interface)
+  aztecWallet: any,
   aztecAddress: string
 ): Promise<bigint | null> {
   if (!TOKENS.aztec.address) {
@@ -92,24 +119,10 @@ export async function getAztecPublicBalance(
   }
 
   try {
-    const pxe = aztecWallet.getNode ? aztecWallet.getNode() : aztecWallet.pxe;
-    if (!pxe) {
-      console.error('[Aztec] Cannot access PXE from wallet');
-      return null;
-    }
-
     const { AztecAddress } = await import('@aztec/aztec.js/addresses');
     const tokenAddr = AztecAddress.fromString(TOKENS.aztec.address);
     const userAddr = AztecAddress.fromString(aztecAddress);
-
-    const result = await pxe.simulateUnconstrained(
-      'balance_of_public',
-      [userAddr],
-      tokenAddr,
-      userAddr
-    );
-
-    return BigInt(result?.toString() || '0');
+    return await callUnconstrained(aztecWallet, 'balance_of_public', userAddr, tokenAddr);
   } catch (e) {
     console.error('[Aztec] Failed to fetch public balance:', e);
     return null;

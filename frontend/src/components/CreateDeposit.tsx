@@ -6,12 +6,11 @@ import { type Hex } from 'viem';
 import { useWalletStore } from '@/stores/walletStore';
 import { useFlowStore } from '@/stores/flowStore';
 import {
-  createBridge,
-  executeDeposit,
+  executeBridge,
+  isBridgeConfigured,
   formatTokenAmount,
   parseTokenAmount,
-  isConfigured,
-} from '@/lib/bridge';
+} from '@/lib/nearIntents';
 import type { BridgeFlowState, BridgeStatus } from '@/lib/bridge/types';
 import { createZkp2pDeposit } from '@/lib/zkp2p/client';
 import { ZKP2P } from '@/config';
@@ -37,23 +36,21 @@ interface CreateDepositProps {
 const PAYMENT_METHODS = ZKP2P.paymentMethods;
 const CURRENCIES = ZKP2P.currencies;
 
-// Deposit flow stages (with burner derivation)
+// Deposit flow stages (with NEAR Intents mock bridge)
 type DepositStage =
   | 'idle'
-  | 'deriving_burner'   // Signing to derive burner key
-  | 'opening'           // Opening order on Aztec
-  | 'waiting_filler'    // Waiting for filler to fill on Base
-  | 'claiming'          // Claiming/settling the order
-  | 'depositing_zkp2p'  // Creating zkp2p deposit (gasless via paymaster)
+  | 'deriving_burner'     // Signing to derive burner key
+  | 'sending_to_solver'   // Sending Aztec USDC to solver (real Aztec tx)
+  | 'waiting_for_funds'   // Waiting for solver to send Base USDC to burner
+  | 'depositing_zkp2p'    // Creating zkp2p deposit (gasless via paymaster)
   | 'complete'
   | 'error';
 
 const STAGE_LABELS: Record<DepositStage, string> = {
   idle: '',
   deriving_burner: 'derive burner key',
-  opening: 'open order on aztec',
-  waiting_filler: 'waiting for filler',
-  claiming: 'claiming on base',
+  sending_to_solver: 'send to bridge',
+  waiting_for_funds: 'waiting for bridge',
   depositing_zkp2p: 'create zkp2p deposit',
   complete: 'complete',
   error: 'failed',
@@ -62,9 +59,8 @@ const STAGE_LABELS: Record<DepositStage, string> = {
 const STAGE_DETAILS: Record<DepositStage, string> = {
   idle: '',
   deriving_burner: 'sign in metamask to derive one-time burner key...',
-  opening: 'signing transaction...',
-  waiting_filler: 'filler will bridge funds to base (up to 5 min)',
-  claiming: 'finalizing bridge settlement...',
+  sending_to_solver: 'sending private USDC on aztec (confirm in wallet)...',
+  waiting_for_funds: 'waiting for solver to send USDC to burner on base...',
   depositing_zkp2p: 'creating zkp2p deposit (gasless)...',
   complete: 'your deposit is live on zkp2p!',
   error: 'see error below',
@@ -78,9 +74,8 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [stage, setStage] = useState<DepositStage>('idle');
-  const [openTxHash, setOpenTxHash] = useState<string | null>(null);
+  const [aztecTxHash, setAztecTxHash] = useState<string | null>(null);
   const [baseTxHash, setBaseTxHash] = useState<string | null>(null);
-  const [orderId, setOrderId] = useState<string | null>(null);
   const [waitingTime, setWaitingTime] = useState(0);
   const [hasActiveFlow, setHasActiveFlow] = useState(false);
   const [burnerAddress, setBurnerAddress] = useState<string | null>(null);
@@ -88,6 +83,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
   const flowRef = useRef<BridgeFlowState | null>(null);
   const waitingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const burnerKeyRef = useRef<Hex | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Flow store for persistence
   const {
@@ -104,24 +100,19 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
   useEffect(() => {
     const savedFlow = getActiveDepositFlow();
     if (savedFlow && savedFlow.status !== 'completed' && savedFlow.status !== 'error') {
-      console.log('[Deposit] Found active flow to recover:', savedFlow.orderId, savedFlow.status);
+      console.log('[Deposit] Found active flow to recover:', savedFlow.status);
       setHasActiveFlow(true);
       flowRef.current = savedFlow;
-      setOrderId(savedFlow.orderId || null);
-      if (savedFlow.txHashes?.open) setOpenTxHash(savedFlow.txHashes.open);
+      if (savedFlow.txHashes?.open) setAztecTxHash(savedFlow.txHashes.open);
       if (savedFlow.txHashes?.claim) setBaseTxHash(savedFlow.txHashes.claim);
       if (savedFlow.burner?.smartAccountAddress) setBurnerAddress(savedFlow.burner.smartAccountAddress);
 
       // Map flow status to UI stage
-      const statusToStage: Record<BridgeStatus, DepositStage> = {
-        'idle': 'idle',
-        'approving': 'opening',
-        'opening': 'opening',
-        'waiting_filler': 'waiting_filler',
-        'claiming': 'claiming',
+      const statusToStage: Partial<Record<BridgeStatus, DepositStage>> = {
+        'opening': 'waiting_for_funds',
+        'waiting_filler': 'waiting_for_funds',
+        'claiming': 'depositing_zkp2p',
         'completed': 'complete',
-        'refunding': 'error',
-        'refunded': 'error',
         'error': 'error',
       };
       const recoveredStage = statusToStage[savedFlow.status] || 'idle';
@@ -131,21 +122,19 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
     }
   }, [getActiveDepositFlow]);
 
-  // Cleanup timer on unmount
+  // Cleanup timer and abort controller on unmount
   useEffect(() => {
     return () => {
-      if (waitingTimerRef.current) {
-        clearInterval(waitingTimerRef.current);
-      }
+      if (waitingTimerRef.current) clearInterval(waitingTimerRef.current);
+      abortControllerRef.current?.abort();
     };
   }, []);
 
   // Clear stale state when stage becomes idle
   useEffect(() => {
     if (stage === 'idle') {
-      setOpenTxHash(null);
+      setAztecTxHash(null);
       setBaseTxHash(null);
-      setOrderId(null);
       setError(null);
       setWaitingTime(0);
       setHasActiveFlow(false);
@@ -170,10 +159,9 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
 
   const amountBigInt = amount ? parseTokenAmount(amount) : 0n;
   const hasEnoughBalance = privateBalance >= amountBigInt;
-  const canCreate = amount && hasEnoughBalance && evmAddress && walletClient;
 
   // Check if bridge and paymaster are configured
-  const bridgeConfigured = isConfigured();
+  const bridgeConfigured = isBridgeConfigured();
   const paymasterConfigured = isPaymasterConfigured();
 
   // Handler to recover burner funds
@@ -188,7 +176,6 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       setIsCreating(true);
       setError(null);
 
-      // Re-sign to derive the same burner key using saved nonce
       console.log('[Deposit] Recovering burner key with nonce:', savedFlow.burner.nonce);
       const { privateKey: burnerPrivateKey, eoaAddress } = await recoverBurner(
         walletClient,
@@ -196,7 +183,6 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
         savedFlow.burner.nonce
       );
 
-      // Verify it matches
       if (eoaAddress.toLowerCase() !== savedFlow.burner.eoaAddress.toLowerCase()) {
         throw new Error('Recovered address mismatch - are you using the same wallet?');
       }
@@ -204,40 +190,31 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       burnerKeyRef.current = burnerPrivateKey;
       console.log('[Deposit] Burner recovered:', eoaAddress);
 
-      // Now try to complete the zkp2p deposit
-      if (savedFlow.status === 'completed' || savedFlow.status === 'claiming') {
-        // Bridge is done, just need to create zkp2p deposit
-        setStage('depositing_zkp2p');
+      setStage('depositing_zkp2p');
 
-        // Create sponsored smart account client
-        const smartAccountClient = await createSponsoredSmartAccountClient(burnerPrivateKey);
+      const smartAccountClient = await createSponsoredSmartAccountClient(burnerPrivateKey);
+      const minIntent = savedFlow.amount / 10n;
+      const maxIntent = savedFlow.amount;
 
-        // Create zkp2p deposit (gasless)
-        const minIntent = savedFlow.amount / 10n;
-        const maxIntent = savedFlow.amount;
+      const zkp2pResult = await createZkp2pDeposit({
+        walletClient: smartAccountClient as any,
+        amount: savedFlow.amount,
+        minIntentAmount: minIntent,
+        maxIntentAmount: maxIntent,
+        paymentMethod,
+        paymentTag,
+        currency,
+      });
 
-        const zkp2pResult = await createZkp2pDeposit({
-          walletClient: smartAccountClient as any, // Smart account client is compatible
-          amount: savedFlow.amount,
-          minIntentAmount: minIntent,
-          maxIntentAmount: maxIntent,
-          paymentMethod,
-          paymentTag,
-          currency,
-        });
+      console.log('[Deposit] zkp2p deposit created:', zkp2pResult);
+      setBaseTxHash(zkp2pResult.hash);
+      setStage('complete');
+      completeDepositFlow();
 
-        console.log('[Deposit] zkp2p deposit created:', zkp2pResult);
-        setBaseTxHash(zkp2pResult.hash);
-        setStage('complete');
-        completeDepositFlow();
-
-        setTimeout(() => {
-          setStage('idle');
-          onRefreshBalances();
-        }, 3000);
-      } else {
-        setError('Flow is in an unrecoverable state. Please abandon and try again.');
-      }
+      setTimeout(() => {
+        setStage('idle');
+        onRefreshBalances();
+      }, 3000);
     } catch (err) {
       console.error('[Deposit] Recovery error:', err);
       setError(err instanceof Error ? err.message : 'Recovery failed');
@@ -267,11 +244,6 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       return;
     }
 
-    if (!bridgeConfigured) {
-      setError('bridge not configured - check token addresses in .env');
-      return;
-    }
-
     if (!paymasterConfigured) {
       setError('paymaster not configured - add NEXT_PUBLIC_COINBASE_PAYMASTER_RPC_URL to .env');
       return;
@@ -279,20 +251,19 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
 
     setIsCreating(true);
     setError(null);
-    setOpenTxHash(null);
+    setAztecTxHash(null);
     setBaseTxHash(null);
-    setOrderId(null);
     setWaitingTime(0);
     setBurnerAddress(null);
 
-    // Pause balance polling during Aztec txs (Azguard has IDB concurrency issues)
     setAztecTxPending(true);
 
-    // Clear any existing timer
     if (waitingTimerRef.current) {
       clearInterval(waitingTimerRef.current);
       waitingTimerRef.current = null;
     }
+
+    abortControllerRef.current = new AbortController();
 
     try {
       // ====================================================================
@@ -301,33 +272,23 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       setStage('deriving_burner');
       console.log('[Deposit] Deriving burner key...');
 
-      // deriveBurner prompts for master key signature (if not cached) and generates timestamp nonce
       const { privateKey: burnerPrivateKey, eoaAddress, nonce } = await deriveBurner(
         walletClient,
         evmAddress
       );
       burnerKeyRef.current = burnerPrivateKey;
 
-      // Get the smart account address (deterministic from the private key)
       const smartAccountAddress = await getSmartAccountAddress(burnerPrivateKey);
       setBurnerAddress(smartAccountAddress);
 
-      console.log('[Deposit] Burner derived:', {
-        nonce,
-        eoaAddress,
-        smartAccountAddress,
-      });
+      console.log('[Deposit] Burner derived:', { nonce, eoaAddress, smartAccountAddress });
 
       // ====================================================================
-      // Step 2: Initialize bridge and persist flow (with nonce for recovery)
+      // Step 2: Bridge Aztec USDC → Base USDC via executeBridge()
+      //
+      // Mock: sends Aztec USDC to solver, polls for Base USDC on burner.
+      // Production: swap body of executeBridge() for NEAR 1Click API calls.
       // ====================================================================
-      console.log('[Deposit] Creating bridge instance...');
-      const bridge = await createBridge({
-        aztecWallet,
-        evmProvider: walletClient,
-      });
-
-      // Create initial flow state with burner info (nonce is critical for recovery!)
       const initialFlow: BridgeFlowState = {
         status: 'opening',
         amount: amountBigInt,
@@ -335,96 +296,71 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
         createdAt: Date.now(),
         updatedAt: Date.now(),
         burner: {
-          nonce,  // Timestamp nonce - allows recovery even if localStorage lost
+          nonce,
           smartAccountAddress,
           eoaAddress,
         },
       };
       flowRef.current = initialFlow;
       startDepositFlow(initialFlow);
-      console.log('[Deposit] Flow persisted to storage with nonce:', nonce);
 
-      // ====================================================================
-      // Step 3: Execute bridge (Aztec -> Base smart account)
-      // ====================================================================
-      setStage('opening');
-      console.log('[Deposit] Executing deposit flow to smart account:', smartAccountAddress);
+      setStage('sending_to_solver');
 
-      const onProgress = (state: Partial<BridgeFlowState>) => {
-        console.log('[Deposit] Progress:', state.status);
-
-        if (state.status) {
-          const statusToStage: Record<BridgeStatus, DepositStage> = {
-            'idle': 'idle',
-            'approving': 'opening',
-            'opening': 'opening',
-            'waiting_filler': 'waiting_filler',
-            'claiming': 'claiming',
-            'completed': 'complete',
-            'refunding': 'error',
-            'refunded': 'error',
-            'error': 'error',
-          };
-          setStage(statusToStage[state.status] || 'opening');
-        }
-
-        if (state.orderId) setOrderId(state.orderId);
-        if (state.txHashes?.open) setOpenTxHash(state.txHashes.open);
-        if (state.txHashes?.fill || state.txHashes?.claim) {
-          setBaseTxHash(state.txHashes.fill || state.txHashes.claim || null);
-        }
-
-        // Start timer when waiting for filler
-        if (state.status === 'waiting_filler' && !waitingTimerRef.current) {
-          waitingTimerRef.current = setInterval(() => {
-            setWaitingTime(prev => prev + 1);
-          }, 1000);
-        }
-
-        // Update store
-        updateDepositFlow({
-          status: state.status,
-          orderId: state.orderId,
-          txHashes: state.txHashes,
-        });
-      };
-
-      // Bridge to the SMART ACCOUNT address (not the user's wallet!)
-      const result = await executeDeposit({
-        bridge,
+      const { receivedAmount: receivedBalance, aztecTxHash: bridgeTxHash } = await executeBridge({
+        aztecWallet,
+        aztecSender: aztecAddr,
         amount: amountBigInt,
-        recipientAddress: smartAccountAddress as Hex,
-        onProgress,
+        baseRecipient: smartAccountAddress as Hex,
+        publicClient,
+        abortSignal: abortControllerRef.current.signal,
+        callbacks: {
+          onSendingToSolver: () => {
+            console.log('[Deposit] Sending Aztec USDC to solver...');
+          },
+          onSolverTxConfirmed: (txHash) => {
+            console.log('[Deposit] Aztec tx confirmed:', txHash);
+            setAztecTxHash(txHash);
+            updateDepositFlow({ status: 'waiting_filler', txHashes: { open: txHash } });
+            setStage('waiting_for_funds');
+            // Start waiting timer after Aztec tx confirms
+            waitingTimerRef.current = setInterval(() => {
+              setWaitingTime(prev => prev + 1);
+            }, 1000);
+          },
+          onWaitingForFunds: (addr) => {
+            console.log('[Deposit] Waiting for solver to fill:', addr);
+          },
+          onFundsReceived: (bal) => {
+            console.log('[Deposit] Funds received:', bal.toString());
+            updateDepositFlow({ status: 'claiming' });
+          },
+        },
       });
 
-      console.log('[Deposit] Bridge complete:', result);
-
-      // Stop timer
       if (waitingTimerRef.current) {
         clearInterval(waitingTimerRef.current);
         waitingTimerRef.current = null;
       }
 
-      // Refresh balances after bridge completes
+      console.log('[Deposit] Bridge complete, received:', receivedBalance.toString());
       onRefreshBalances(true);
 
       // ====================================================================
-      // Step 4: Create zkp2p deposit using sponsored smart account (GASLESS!)
+      // Step 3: Create zkp2p deposit using sponsored smart account (GASLESS)
       // ====================================================================
       setStage('depositing_zkp2p');
       updateDepositFlow({ status: 'claiming' });
       console.log('[Deposit] Creating zkp2p deposit via paymaster (gasless)...');
 
-      // Create sponsored smart account client
       const smartAccountClient = await createSponsoredSmartAccountClient(burnerPrivateKey);
 
-      // Calculate min/max intent amounts
-      const minIntent = amountBigInt / 10n; // 10% minimum
-      const maxIntent = amountBigInt; // 100% maximum
+      const depositAmount = receivedBalance < amountBigInt ? receivedBalance : amountBigInt;
+      const minIntent = depositAmount / 10n;
+      const maxIntent = depositAmount;
 
       const zkp2pResult = await createZkp2pDeposit({
-        walletClient: smartAccountClient as any, // Smart account client is compatible
-        amount: amountBigInt,
+        walletClient: smartAccountClient as any,
+        amount: depositAmount,
         minIntentAmount: minIntent,
         maxIntentAmount: maxIntent,
         paymentMethod,
@@ -442,14 +378,12 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       setStage('complete');
       completeDepositFlow();
 
-      // Reset after showing success
       setTimeout(() => {
         setStage('idle');
         setAmount('');
         setPaymentTag('');
-        setOpenTxHash(null);
+        setAztecTxHash(null);
         setBaseTxHash(null);
-        setOrderId(null);
         setWaitingTime(0);
         setBurnerAddress(null);
         burnerKeyRef.current = null;
@@ -464,7 +398,6 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       setStage('error');
       failDepositFlow(errorMessage);
 
-      // Clear timer on error
       if (waitingTimerRef.current) {
         clearInterval(waitingTimerRef.current);
         waitingTimerRef.current = null;
@@ -472,6 +405,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
     } finally {
       setIsCreating(false);
       setAztecTxPending(false);
+      abortControllerRef.current = null;
     }
   };
 
@@ -483,8 +417,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       {hasActiveFlow && flowRef.current && (() => {
         const elapsed = Date.now() - (flowRef.current.updatedAt || flowRef.current.createdAt);
         const elapsedMin = Math.floor(elapsed / 60000);
-        const isStale = elapsed > 10 * 60 * 1000; // > 10 min since last update
-        const hasOpenedOrder = !!flowRef.current.orderId || !!flowRef.current.txHashes?.open;
+        const isStale = elapsed > 10 * 60 * 1000;
 
         return (
           <div className={`border p-4 space-y-3 ${isStale ? 'border-red-700 bg-red-900/10' : 'border-yellow-600 bg-yellow-900/20'}`}>
@@ -501,7 +434,6 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
             </div>
 
             <div className="text-xs text-gray-400 space-y-1">
-              <div>Order ID: <span className="text-white font-mono">{flowRef.current.orderId || 'pending'}</span></div>
               <div>Amount: <span className="text-white">{formatTokenAmount(flowRef.current.amount)} USDC</span></div>
               <div>Status: <span className={isStale ? 'text-red-400' : 'text-yellow-400'}>{stage}</span></div>
               {flowRef.current.burner && (
@@ -511,23 +443,12 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
                   className="font-mono text-purple-400 hover:text-purple-300 cursor-pointer bg-transparent border-none p-0 text-xs"
                 >{flowRef.current.burner.smartAccountAddress.slice(0, 10)}...{flowRef.current.burner.smartAccountAddress.slice(-6)}</button></div>
               )}
-              {openTxHash && <div>Open TX: <span className="text-white font-mono text-xs">{openTxHash.slice(0, 10)}...</span></div>}
             </div>
 
-            {isStale && (
+            {isStale && flowRef.current.burner && (
               <div className="text-xs text-red-500 border border-red-900 p-2">
-                This flow hasn&apos;t updated in {elapsedMin} min. It&apos;s likely stuck.
-                {hasOpenedOrder && flowRef.current.burner
-                  ? ' The bridge may have completed - try "recover & complete" to finish the zkp2p deposit.'
-                  : ' You can safely clear this and try again.'}
-              </div>
-            )}
-
-            {!isStale && (
-              <div className="text-xs text-gray-500">
-                {flowRef.current.burner
-                  ? 'Funds may be on the burner address. Sign to recover and complete the deposit.'
-                  : 'Your previous deposit is still in progress.'}
+                This flow hasn&apos;t updated in {elapsedMin} min.
+                Try &quot;recover &amp; complete&quot; to finish the zkp2p deposit.
               </div>
             )}
 
@@ -537,22 +458,15 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
                 disabled={isCreating}
                 className="flex-1 py-2 text-xs border border-gray-700 text-gray-400 hover:border-gray-500 hover:text-white transition-colors disabled:opacity-50"
               >
-                {hasOpenedOrder && flowRef.current.burner ? 'clear (funds on burner)' : 'clear'}
+                clear
               </button>
-              {flowRef.current.burner ? (
+              {flowRef.current.burner && (
                 <button
                   onClick={handleRecoverBurner}
                   disabled={isCreating}
                   className="flex-1 py-2 text-xs border border-green-700 text-green-400 hover:border-green-500 hover:text-green-300 transition-colors disabled:opacity-50"
                 >
                   {isCreating ? 'recovering...' : 'recover & complete'}
-                </button>
-              ) : (
-                <button
-                  onClick={() => setHasActiveFlow(false)}
-                  className="flex-1 py-2 text-xs border border-yellow-700 text-yellow-400 hover:border-yellow-500 hover:text-yellow-300 transition-colors"
-                >
-                  continue flow
                 </button>
               )}
             </div>
@@ -563,7 +477,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       {/* Configuration Warnings */}
       {!bridgeConfigured && (
         <div className="text-xs text-yellow-600 border border-yellow-800 p-2">
-          bridge not configured - check token addresses
+          bridge not configured
         </div>
       )}
       {!paymasterConfigured && (
@@ -664,18 +578,11 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       {/* Status Stages */}
       {stage !== 'idle' && stage !== 'error' && (
         <div className="border border-gray-800 p-4 space-y-3">
-          <div className="flex justify-between items-center">
-            <div className="text-xs text-gray-500 uppercase">deposit progress</div>
-            {orderId && (
-              <div className="text-xs text-gray-600 font-mono">
-                order: {orderId.slice(0, 8)}...
-              </div>
-            )}
-          </div>
+          <div className="text-xs text-gray-500 uppercase">deposit progress</div>
 
           <div className="space-y-2">
-            {(['deriving_burner', 'opening', 'waiting_filler', 'claiming', 'depositing_zkp2p', 'complete'] as const).map((s) => {
-              const stages = ['deriving_burner', 'opening', 'waiting_filler', 'claiming', 'depositing_zkp2p', 'complete'];
+            {(['deriving_burner', 'sending_to_solver', 'waiting_for_funds', 'depositing_zkp2p', 'complete'] as const).map((s) => {
+              const stages: DepositStage[] = ['deriving_burner', 'sending_to_solver', 'waiting_for_funds', 'depositing_zkp2p', 'complete'];
               const currentIdx = stages.indexOf(stage);
               const stageIdx = stages.indexOf(s);
               const isActive = s === stage;
@@ -696,7 +603,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
                     'text-gray-700'
                   }>
                     {STAGE_LABELS[s]}
-                    {isActive && s === 'waiting_filler' && waitingTime > 0 && (
+                    {isActive && s === 'waiting_for_funds' && waitingTime > 0 && (
                       <span className="text-gray-500 ml-2">({waitingTime}s)</span>
                     )}
                   </span>
@@ -712,8 +619,26 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
             </div>
           )}
 
-          {/* Burner Address */}
-          {burnerAddress && (
+          {/* Burner Address — prominent when waiting for funds */}
+          {burnerAddress && stage === 'waiting_for_funds' && (
+            <div className="border border-purple-800 bg-purple-900/10 p-3 space-y-2">
+              <div className="text-xs text-purple-400 uppercase">send USDC to this address</div>
+              <button
+                onClick={() => { navigator.clipboard.writeText(burnerAddress).catch(() => { window.prompt('Copy address:', burnerAddress); }); }}
+                title="Click to copy"
+                className="font-mono text-sm text-white hover:text-purple-300 cursor-pointer bg-transparent border-none p-0 break-all text-left"
+              >{burnerAddress}</button>
+              <div className="text-xs text-gray-600">
+                amount: {formatTokenAmount(amountBigInt)} USDC on Base
+              </div>
+              <div className="text-xs text-gray-700">
+                polling every 5s for balance...
+              </div>
+            </div>
+          )}
+
+          {/* Burner Address — compact for other stages */}
+          {burnerAddress && stage !== 'waiting_for_funds' && (
             <div className="text-xs text-gray-600 pt-2 border-t border-gray-800">
               burner: <button
                 onClick={() => { navigator.clipboard.writeText(burnerAddress).catch(() => { window.prompt('Copy address:', burnerAddress); }); }}
@@ -725,10 +650,10 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
           )}
 
           {/* Transaction Hashes */}
-          {(openTxHash || baseTxHash) && (
+          {(aztecTxHash || baseTxHash) && (
             <div className="text-xs text-gray-600 pt-2 border-t border-gray-800 space-y-1">
-              {openTxHash && (
-                <div>aztec tx: <a href={`https://devnet.aztecscan.xyz/tx-effects/${openTxHash}`} target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 underline">{openTxHash.slice(0, 10)}...{openTxHash.slice(-8)}</a></div>
+              {aztecTxHash && (
+                <div>aztec tx: <span className="text-purple-400 font-mono">{aztecTxHash.slice(0, 10)}...{aztecTxHash.slice(-8)}</span></div>
               )}
               {baseTxHash && (
                 <div>base tx: <a href={`https://basescan.org/tx/${baseTxHash}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline">{baseTxHash.slice(0, 10)}...{baseTxHash.slice(-8)}</a></div>
@@ -742,19 +667,14 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       {error && (
         <div className="border border-red-900 p-3 space-y-2">
           <div className="text-sm text-red-500">{error}</div>
-          {orderId && (
-            <div className="text-xs text-gray-600">
-              order ID: <span className="font-mono">{orderId}</span>
-            </div>
-          )}
           {burnerAddress && (
             <div className="text-xs text-gray-600">
               burner: <span className="font-mono">{burnerAddress}</span>
             </div>
           )}
-          {openTxHash && (
+          {aztecTxHash && (
             <div className="text-xs text-gray-600">
-              aztec tx: <a href={`https://devnet.aztecscan.xyz/tx-effects/${openTxHash}`} target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 underline font-mono">{openTxHash.slice(0, 16)}...</a>
+              aztec tx: <span className="text-purple-400 font-mono">{aztecTxHash.slice(0, 16)}...</span>
             </div>
           )}
           {baseTxHash && (
@@ -776,6 +696,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
         <button
           onClick={() => {
             console.log('[Deposit] User cancelled active flow');
+            abortControllerRef.current?.abort();
             failDepositFlow('cancelled by user');
             setIsCreating(false);
             setAztecTxPending(false);
@@ -809,6 +730,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       <div className="text-xs text-gray-700 space-y-1">
         <p>deposits are created from a fresh burner address for privacy</p>
         <p>gas is sponsored - no ETH needed on the burner</p>
+        <p className="text-yellow-800">pre-alpha: bridge is mocked - send USDC manually to burner</p>
       </div>
 
       {/* Completed Flow History */}
@@ -826,7 +748,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
                 const isSuccess = flow.status === 'completed';
 
                 return (
-                  <div key={`${flow.orderId || i}-${flow.createdAt}`} className="flex items-center justify-between text-xs border border-gray-800 p-2">
+                  <div key={`${i}-${flow.createdAt}`} className="flex items-center justify-between text-xs border border-gray-800 p-2">
                     <div className="flex items-center gap-2">
                       <span className={isSuccess ? 'text-green-600' : 'text-red-600'}>
                         {isSuccess ? '✓' : '✗'}

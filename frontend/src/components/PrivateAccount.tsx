@@ -381,13 +381,12 @@ export function PrivateAccount({
       const tokenAddr = AztecAddress.fromString(TOKENS.aztec.address);
       const userAddr = AztecAddress.fromString(aztecAddress);
 
-      // Create a contract instance and call transfer_public_to_private
-      // The wallet IS the sender, so we can call directly
+      // Create a contract instance and call transfer_to_private
       const tokenContract = await Contract.at(tokenAddr, [] as any, aztecWallet);
-      const tx = await tokenContract.methods
-        .transfer_public_to_private(userAddr, userAddr, publicBalance, 0n)
-        .send()
-        .wait();
+      const tx = await (tokenContract.methods as any)
+        .transfer_to_private(userAddr, publicBalance)
+        .send({})
+      await tx.wait();
 
       console.log('[PrivateAccount] Transfer tx hash:', tx.txHash.toString());
       setStatus('transferred to private');
