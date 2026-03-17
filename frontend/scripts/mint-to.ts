@@ -143,12 +143,20 @@ async function main() {
     log(`Private mint confirmed! Block: ${privReceipt.blockNumber}, tx: ${privReceipt.txHash.toString()}`);
   }
 
-  // Check balances
+  // Check public balance (requires simulate options in this SDK version)
   try {
-    const pubBal = await token.methods.balance_of_public(targetAddr).simulate();
+    const pubBal = await token.methods.balance_of_public(targetAddr).simulate({
+      from: adminAddress,
+    });
     log(`Target public balance: ${Number(pubBal) / (10 ** TOKEN_DECIMALS)} USDC`);
   } catch (e: any) {
     log(`Could not read public balance: ${e.message}`);
+  }
+
+  if (alsoPrivate) {
+    log(
+      'Private mint submitted successfully. Note: private balance visibility depends on the recipient wallet keys/indexer (Azguard may not display custom token private notes).'
+    );
   }
 
   console.log('\nDone!');

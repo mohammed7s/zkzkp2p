@@ -3,15 +3,42 @@
  * All magic numbers and environment variables in one place
  */
 
+import { base, baseSepolia } from 'viem/chains';
+
 // ==================== ENVIRONMENT VALIDATION ====================
 
 // Validate required env vars on load (client-side only)
 // Note: Next.js only inlines NEXT_PUBLIC_* with static string literals,
 // so we check the actual resolved values, not dynamic process.env[key].
 if (typeof window !== 'undefined') {
-  if (!import.meta.env.NEXT_PUBLIC_AZTEC_TOKEN_ADDRESS || !import.meta.env.NEXT_PUBLIC_BASE_TOKEN_ADDRESS) {
+  if (!import.meta.env.NEXT_PUBLIC_AZTEC_TOKEN_ADDRESS) {
     console.error('[Config] Missing required environment variables. Check your .env.local file');
   }
+}
+
+export const BASE_NETWORK = import.meta.env.NEXT_PUBLIC_BASE_NETWORK === 'sepolia' ? 'sepolia' : 'mainnet';
+
+const BASE_NETWORK_DEFAULTS = {
+  mainnet: {
+    chain: base,
+    rpcUrl: 'https://mainnet.base.org',
+    tokenAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+    explorerUrl: 'https://basescan.org',
+  },
+  sepolia: {
+    chain: baseSepolia,
+    rpcUrl: 'https://sepolia.base.org',
+    tokenAddress: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+    explorerUrl: 'https://sepolia.basescan.org',
+  },
+} as const;
+
+const activeBaseNetwork = BASE_NETWORK_DEFAULTS[BASE_NETWORK];
+
+export const BASE_CHAIN = activeBaseNetwork.chain;
+export const BASE_EXPLORER_URL = activeBaseNetwork.explorerUrl;
+export function getBaseTxExplorerUrl(txHash: string): string {
+  return `${BASE_EXPLORER_URL}/tx/${txHash}`;
 }
 
 // ==================== CHAIN CONFIGURATION ====================
@@ -23,9 +50,9 @@ export const CHAINS = {
     name: 'Aztec Devnet',
   },
   base: {
-    chainId: parseInt(import.meta.env.NEXT_PUBLIC_BASE_CHAIN_ID || '8453'),
-    rpcUrl: import.meta.env.NEXT_PUBLIC_BASE_RPC_URL || 'https://mainnet.base.org',
-    name: 'Base',
+    chainId: parseInt(import.meta.env.NEXT_PUBLIC_BASE_CHAIN_ID || String(BASE_CHAIN.id)),
+    rpcUrl: import.meta.env.NEXT_PUBLIC_BASE_RPC_URL || activeBaseNetwork.rpcUrl,
+    name: BASE_CHAIN.name,
   },
 } as const;
 
@@ -38,7 +65,7 @@ export const CONTRACTS = {
   },
   base: {
     train: import.meta.env.NEXT_PUBLIC_BASE_TRAIN_ADDRESS || '',
-    token: import.meta.env.NEXT_PUBLIC_BASE_TOKEN_ADDRESS || '',
+    token: import.meta.env.NEXT_PUBLIC_BASE_TOKEN_ADDRESS || activeBaseNetwork.tokenAddress,
   },
 } as const;
 
@@ -47,7 +74,6 @@ export const CONTRACTS = {
 export const SOLVER = {
   evmAddress: (import.meta.env.NEXT_PUBLIC_SOLVER_EVM_ADDRESS || '') as `0x${string}`,
   aztecAddress: import.meta.env.NEXT_PUBLIC_SOLVER_AZTEC_ADDRESS || '',
-  apiUrl: import.meta.env.NEXT_PUBLIC_SOLVER_API_URL || 'http://localhost:3001',
 } as const;
 
 // ==================== TIMING CONFIGURATION ====================
@@ -137,6 +163,7 @@ export function isSolverConfigured(): boolean {
  * Log current configuration (for debugging)
  */
 export function logConfig(): void {
+  console.log('[Config] Base network:', BASE_NETWORK);
   console.log('[Config] Chains:', CHAINS);
   console.log('[Config] Contracts:', {
     aztec: {
@@ -151,6 +178,5 @@ export function logConfig(): void {
   console.log('[Config] Solver:', {
     evmAddress: SOLVER.evmAddress || '(not set)',
     aztecAddress: SOLVER.aztecAddress || '(not set)',
-    apiUrl: SOLVER.apiUrl,
   });
 }

@@ -50,39 +50,13 @@ async function callUnconstrained(
 ): Promise<bigint> {
   const { TokenContract } = await import('@aztec/noir-contracts.js/Token');
   const token = await TokenContract.at(tokenAddr, aztecWallet);
+
   const fn = (token.methods as any)[methodName](userAddr);
 
-  // Log available methods on the function interaction for debugging
-  const fnMethods = Object.getOwnPropertyNames(Object.getPrototypeOf(fn));
-  console.log(`[Aztec] ${methodName} interaction methods:`, fnMethods);
-
-  // Approach 1: .simulate(fromAddress) — unconstrained functions take AztecAddress
-  if (typeof fn.simulate === 'function') {
-    try {
-      const result = await fn.simulate(userAddr);
-      return BigInt(result?.toString() || '0');
-    } catch (e: any) {
-      console.warn(`[Aztec] ${methodName}.simulate(addr) failed:`, e.message);
-    }
-  }
-
-  // Approach 2: .simulate({from: addr})
-  if (typeof fn.simulate === 'function') {
-    try {
-      const result = await fn.simulate({ from: userAddr });
-      return BigInt(result?.toString() || '0');
-    } catch (e: any) {
-      console.warn(`[Aztec] ${methodName}.simulate({from}) failed:`, e.message);
-    }
-  }
-
-  // Approach 3: .view()
-  if (typeof fn.view === 'function') {
-    const result = await fn.view();
-    return BigInt(result?.toString() || '0');
-  }
-
-  throw new Error(`No working simulation method found for ${methodName}`);
+  // .simulate() takes an options object { from }, not a positional address.
+  // `from` sets the scope for note discovery (whose notes to decrypt).
+  const result = await fn.simulate({ from: userAddr });
+  return BigInt(result?.toString() || '0');
 }
 
 /**

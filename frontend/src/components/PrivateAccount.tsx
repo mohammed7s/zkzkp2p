@@ -5,20 +5,20 @@ import { useAccount, useWalletClient, usePublicClient } from 'wagmi';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { useWalletStore } from '@/stores/walletStore';
 import { useFlowStore } from '@/stores/flowStore';
+import { BASE_CHAIN } from '@/config';
 import {
-  createBridge,
-  executeShield,
   formatTokenAmount,
   parseTokenAmount,
-  isConfigured,
   TOKENS,
 } from '@/lib/bridge';
+import {
+  executeBaseToAztecBridge,
+  fundBaseAddressFromSolver,
+  isBaseFaucetAvailable,
+  isBaseToAztecBridgeConfigured,
+} from '@/lib/nearIntents';
 // Transfer to private is done via the aztecWallet directly
-import type { BridgeFlowState, BridgeStatus } from '@/lib/bridge/types';
-import { padHex } from 'viem';
-
-// LocalStorage key for persisting flow state
-const FLOW_STORAGE_KEY = 'zkzkp2p-shield-flow';
+import type { BridgeFlowState } from '@/lib/bridge/types';
 
 interface PrivateAccountProps {
   privateBalance: bigint;
@@ -28,12 +28,12 @@ interface PrivateAccountProps {
   onTopUp: () => void;
 }
 
-// Shield flow stages (Substance bridge flow)
+// Shield flow stages (mock solver flow)
 type ShieldStage =
   | 'idle'
-  | 'opening'         // Opening order on Base
-  | 'waiting_filler'  // Waiting for filler to fill on Aztec
-  | 'claiming'        // Claiming private tokens
+  | 'opening'         // Sending Base USDC to solver
+  | 'waiting_filler'  // Waiting for solver to fill on Aztec
+  | 'claiming'        // Solver tx confirmed, waiting for balance refresh
   | 'complete'
   | 'error';
 
@@ -78,7 +78,7 @@ export function PrivateAccount({
   // Load persisted flow state on mount
   useEffect(() => {
     const savedFlow = getActiveShieldFlow();
-    if (savedFlow && savedFlow.status !== 'completed' && savedFlow.status !== 'error') {
+      if (savedFlow && savedFlow.status !== 'completed' && savedFlow.status !== 'error') {
       console.log('[TopUp] Found active flow to recover:', savedFlow.orderId, savedFlow.status);
       setFlowState(savedFlow);
       setOrderId(savedFlow.orderId || null);
@@ -86,16 +86,13 @@ export function PrivateAccount({
       if (savedFlow.txHashes?.claim) setAztecTxHash(savedFlow.txHashes.claim);
 
       // Map flow status to UI stage
-      const statusToStage: Record<BridgeStatus, ShieldStage> = {
-        'idle': 'idle',
-        'approving': 'opening',
-        'opening': 'opening',
-        'waiting_filler': 'waiting_filler',
-        'claiming': 'claiming',
-        'completed': 'complete',
-        'refunding': 'error',
-        'refunded': 'error',
-        'error': 'error',
+      const statusToStage: Record<string, ShieldStage> = {
+        idle: 'idle',
+        opening: 'opening',
+        waiting_filler: 'waiting_filler',
+        claiming: 'claiming',
+        completed: 'complete',
+        error: 'error',
       };
       const recoveredStage = statusToStage[savedFlow.status] || 'idle';
       if (recoveredStage !== 'idle') {
@@ -114,10 +111,11 @@ export function PrivateAccount({
     };
   }, []);
 
-  const { address: evmAddress } = useAccount();
+  const { address: evmAddress, chainId } = useAccount();
   const { aztecAddress, aztecWallet, setAztecTxPending } = useWalletStore();
   const { data: walletClient } = useWalletClient();
   const publicClient = usePublicClient();
+  const chainMismatch = !!chainId && chainId !== BASE_CHAIN.id;
 
   // Helper to detect user rejection
   const isUserRejection = (error: any): boolean => {
@@ -150,35 +148,20 @@ export function PrivateAccount({
   };
 
   const handleFaucet = async () => {
-    if (!walletClient || !publicClient || !TOKENS.base.address) return;
+    if (!publicClient || !evmAddress || !isBaseFaucetAvailable()) return;
 
     setIsFauceting(true);
     setError(null);
-    setStatus('calling faucet...');
+    setStatus('sending test USDC...');
 
     try {
-      // Simple faucet call - mint test USDC
-      // Note: This assumes the token has a mint function for testnet
-      const { request } = await publicClient.simulateContract({
-        address: TOKENS.base.address as `0x${string}`,
-        abi: [
-          {
-            name: 'mint',
-            type: 'function',
-            stateMutability: 'nonpayable',
-            inputs: [
-              { name: 'to', type: 'address' },
-              { name: 'amount', type: 'uint256' },
-            ],
-            outputs: [],
-          },
-        ],
-        functionName: 'mint',
-        args: [evmAddress!, BigInt(1000) * BigInt(10 ** 6)], // 1000 USDC
-        account: evmAddress,
+      const txHash = await fundBaseAddressFromSolver({
+        recipientAddress: evmAddress,
+        amount: 20n * 10n ** 6n, // 20 USDC
+        publicClient,
       });
-      await walletClient.writeContract(request);
-      setStatus('faucet complete');
+      console.log('[PrivateAccount] Faucet tx:', txHash);
+      setStatus('test USDC received');
       onTopUp();
       setTimeout(() => setStatus(null), 2000);
     } catch (err) {
@@ -194,8 +177,28 @@ export function PrivateAccount({
   };
 
   const handleTopUp = async () => {
-    if (!walletClient || !publicClient || !evmAddress || !aztecAddress || !aztecWallet) {
-      setError('wallets not connected');
+    if (!isEvmConnected || !evmAddress) {
+      setError('connect your base wallet');
+      return;
+    }
+
+    if (chainMismatch) {
+      setError(`switch your wallet to ${BASE_CHAIN.name}`);
+      return;
+    }
+
+    if (!walletClient) {
+      setError('wallet signer not ready - reconnect or switch network');
+      return;
+    }
+
+    if (!publicClient) {
+      setError('base client not ready');
+      return;
+    }
+
+    if (!aztecAddress || !aztecWallet) {
+      setError('aztec wallet still setting up - wait a moment and try again');
       return;
     }
 
@@ -210,8 +213,8 @@ export function PrivateAccount({
       return;
     }
 
-    if (!isConfigured()) {
-      setError('bridge not configured - check token addresses');
+    if (!isBaseToAztecBridgeConfigured()) {
+      setError('bridge not configured - check solver and token config');
       return;
     }
 
@@ -232,16 +235,6 @@ export function PrivateAccount({
 
     setAztecTxPending(true);
     try {
-      // Create bridge instance
-      console.log('[TopUp] Creating bridge instance...');
-      const bridge = await createBridge({
-        aztecWallet,
-        evmProvider: walletClient,
-      });
-
-      // Pad Aztec address to 32 bytes
-      const paddedAztecAddr = padHex(aztecAddress as `0x${string}`, { size: 32 });
-
       // Create initial flow state for persistence
       const initialFlow: BridgeFlowState = {
         status: 'opening',
@@ -254,63 +247,52 @@ export function PrivateAccount({
       startShieldFlow(initialFlow);
       console.log('[TopUp] Flow persisted to storage');
 
-      // Execute shield flow (Base -> Aztec)
+      // Execute mock shield flow (Base -> solver on Base -> private Aztec fill)
       setStage('opening');
-      console.log('[TopUp] Executing shield flow...');
+      console.log('[TopUp] Executing mock shield flow...');
 
-      const onProgress = (state: Partial<BridgeFlowState>) => {
-        console.log('[TopUp] Progress:', state.status);
-
-        if (state.status) {
-          const statusToStage: Record<BridgeStatus, ShieldStage> = {
-            'idle': 'idle',
-            'approving': 'opening',
-            'opening': 'opening',
-            'waiting_filler': 'waiting_filler',
-            'claiming': 'claiming',
-            'completed': 'complete',
-            'refunding': 'error',
-            'refunded': 'error',
-            'error': 'error',
-          };
-          setStage(statusToStage[state.status] || 'opening');
-        }
-
-        if (state.orderId) {
-          setOrderId(state.orderId);
-        }
-
-        if (state.txHashes?.open) {
-          setBaseTxHash(state.txHashes.open);
-        }
-
-        if (state.txHashes?.claim) {
-          setAztecTxHash(state.txHashes.claim);
-        }
-
-        // Start timer when waiting for filler
-        if (state.status === 'waiting_filler' && !waitingTimerRef.current) {
-          waitingTimerRef.current = setInterval(() => {
-            setWaitingTime(prev => prev + 1);
-          }, 1000);
-        }
-
-        // Update store
-        updateShieldFlow({
-          status: state.status,
-          orderId: state.orderId,
-          txHashes: state.txHashes,
-        });
-      };
-
-      const result = await executeShield({
-        bridge,
+      const result = await executeBaseToAztecBridge({
+        walletClient,
+        publicClient,
+        evmSender: evmAddress,
+        aztecRecipient: aztecAddress,
         amount,
-        aztecRecipient: paddedAztecAddr,
-        onProgress,
+        callbacks: {
+          onSendingToSolver: () => {
+            console.log('[TopUp] Sending Base USDC to solver...');
+            setStage('opening');
+            updateShieldFlow({ status: 'opening' });
+          },
+          onBaseTxConfirmed: (txHash) => {
+            console.log('[TopUp] Base tx confirmed:', txHash);
+            setBaseTxHash(txHash);
+            setStage('waiting_filler');
+            updateShieldFlow({
+              status: 'waiting_filler',
+              txHashes: { open: txHash },
+            });
+            waitingTimerRef.current = setInterval(() => {
+              setWaitingTime(prev => prev + 1);
+            }, 1000);
+          },
+          onWaitingForFill: (recipient) => {
+            console.log('[TopUp] Waiting for solver fill for:', recipient);
+            setStatus('preparing private fill on aztec - proof generation can take 1-3 minutes');
+          },
+          onAztecTxConfirmed: (txHash) => {
+            console.log('[TopUp] Aztec fill confirmed:', txHash);
+            setAztecTxHash(txHash);
+            setStage('claiming');
+            setStatus('private fill confirmed on aztec');
+            updateShieldFlow({
+              status: 'claiming',
+              txHashes: { claim: txHash },
+            });
+          },
+        },
       });
 
-      console.log('[TopUp] Shield complete:', result);
+      console.log('[TopUp] Mock shield complete:', result);
 
       // Stop timer
       if (waitingTimerRef.current) {
@@ -324,11 +306,12 @@ export function PrivateAccount({
 
       // Save completed flow info for success banner, then reset flow state
       setLastCompleted({
-        baseTxHash,
-        aztecTxHash,
-        orderId,
+        baseTxHash: result.baseTxHash,
+        aztecTxHash: result.aztecTxHash,
+        orderId: null,
         amount: topUpAmount,
       });
+      setStatus('shield complete');
       onTopUp();
       setStage('idle');
       setIsTopingUp(false);
@@ -363,37 +346,49 @@ export function PrivateAccount({
     }
   };
 
-  // Transfer public balance to private (if any leftover)
+  // Transfer public balance to private (shield)
   const handleTransferToPrivate = async () => {
     if (!aztecWallet || !aztecAddress || publicBalance <= 0n) return;
 
     setIsTransferringToPrivate(true);
     setError(null);
-    setStatus('transferring to private...');
+    setStatus('setting up sponsored fee...');
 
     try {
       console.log('[PrivateAccount] Transferring', publicBalance.toString(), 'from public to private');
 
-      // Use the embedded wallet to call transfer_public_to_private
       const { AztecAddress } = await import('@aztec/aztec.js/addresses');
-      const { Contract } = await import('@aztec/aztec.js/contracts');
+      const { Fr } = await import('@aztec/aztec.js/fields');
+      const { TokenContract } = await import('@aztec/noir-contracts.js/Token');
+      const { SponsoredFPCContract } = await import('@aztec/noir-contracts.js/SponsoredFPC');
+      const { SponsoredFeePaymentMethod } = await import('@aztec/aztec.js/fee/testing');
+      const { getContractInstanceFromInstantiationParams } = await import('@aztec/stdlib/contract');
+
+      // Get SponsoredFPC address for fee payment (already registered during wallet creation)
+      const sponsoredFPCInstance = await getContractInstanceFromInstantiationParams(
+        SponsoredFPCContract.artifact,
+        { salt: new Fr(0) },
+      );
+      const paymentMethod = new SponsoredFeePaymentMethod(sponsoredFPCInstance.address);
 
       const tokenAddr = AztecAddress.fromString(TOKENS.aztec.address);
       const userAddr = AztecAddress.fromString(aztecAddress);
 
-      // Create a contract instance and call transfer_to_private
-      const tokenContract = await Contract.at(tokenAddr, [] as any, aztecWallet);
-      const tx = await (tokenContract.methods as any)
-        .transfer_to_private(userAddr, publicBalance)
-        .send({})
-      await tx.wait();
+      setStatus('sending transfer_to_private...');
 
-      console.log('[PrivateAccount] Transfer tx hash:', tx.txHash.toString());
-      setStatus('transferred to private');
+      const token = await TokenContract.at(tokenAddr, aztecWallet);
+      const receipt = await token.methods
+        .transfer_to_private(userAddr, publicBalance)
+        .send({ from: userAddr, fee: { paymentMethod }, wait: { timeout: 300 } });
+
+      console.log('[PrivateAccount] Transfer to private receipt:', receipt);
+      setStatus('transferred to private!');
+      setAztecTxPending(true);
       setTimeout(() => {
         setStatus(null);
+        setAztecTxPending(false);
         onTopUp(); // Refresh balances
-      }, 2000);
+      }, 3000);
     } catch (err) {
       console.error('[PrivateAccount] Transfer to private failed:', err);
       if (isUserRejection(err)) {
@@ -503,7 +498,7 @@ export function PrivateAccount({
                   <span className="text-blue-400">{formatTokenAmount(baseBalance)} USDC</span>
                   <button
                     onClick={handleFaucet}
-                    disabled={isFauceting}
+                    disabled={isFauceting || !isBaseFaucetAvailable()}
                     className="text-gray-500 hover:text-gray-300 disabled:opacity-50"
                   >
                     {isFauceting ? '...' : '+faucet'}
@@ -564,7 +559,7 @@ export function PrivateAccount({
                         stage === 'opening' ? 'text-gray-300' :
                         'text-gray-700'
                       }>
-                        {stage === 'opening' ? 'opening order on base...' : 'order opened'}
+                        {stage === 'opening' ? 'sending USDC to solver on base...' : 'base transfer confirmed'}
                       </span>
                     </div>
 
@@ -584,7 +579,7 @@ export function PrivateAccount({
                       }>
                         {stage === 'waiting_filler' ? (
                           <>waiting for filler...{waitingTime > 0 && <span className="text-gray-500 ml-1">({waitingTime}s)</span>}</>
-                        ) : ['claiming', 'complete'].includes(stage) ? 'filler responded' : 'wait for filler'}
+                        ) : ['claiming', 'complete'].includes(stage) ? 'solver responded' : 'wait for solver'}
                       </span>
                     </div>
 
@@ -602,9 +597,9 @@ export function PrivateAccount({
                         stage === 'claiming' ? 'text-gray-300' :
                         'text-gray-700'
                       }>
-                        {stage === 'claiming' ? 'claiming on aztec...' :
+                        {stage === 'claiming' ? 'private fill confirmed on aztec...' :
                          stage === 'complete' ? 'private balance received' :
-                         'claim tokens'}
+                         'receive private fill'}
                       </span>
                     </div>
                   </div>

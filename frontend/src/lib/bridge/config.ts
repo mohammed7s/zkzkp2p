@@ -6,7 +6,13 @@
  */
 
 import type { Hex } from 'viem'
-import { base } from 'viem/chains'
+import {
+  BASE_CHAIN as APP_BASE_CHAIN,
+  BASE_NETWORK,
+  CHAINS,
+  CONTRACTS,
+  TIMING as APP_TIMING,
+} from '@/config'
 
 // Re-export SDK constants for convenience
 export {
@@ -30,12 +36,12 @@ export {
 // Chain Configuration (app-specific)
 // =============================================================================
 
-// Base chain config with viem chain object
+// Base chain config with viem chain object from the app-wide network selection
 export const BASE_CHAIN = {
-  id: base.id, // 8453
-  name: 'Base',
-  rpcUrl: import.meta.env.NEXT_PUBLIC_BASE_RPC_URL || 'https://mainnet.base.org',
-  viemChain: base,
+  id: APP_BASE_CHAIN.id,
+  name: APP_BASE_CHAIN.name,
+  rpcUrl: CHAINS.base.rpcUrl,
+  viemChain: APP_BASE_CHAIN,
 } as const
 
 // =============================================================================
@@ -44,12 +50,12 @@ export const BASE_CHAIN = {
 
 export const TOKENS = {
   aztec: {
-    address: (import.meta.env.NEXT_PUBLIC_AZTEC_TOKEN_ADDRESS || '') as Hex,
+    address: CONTRACTS.aztec.token as Hex,
     symbol: 'USDC',
     decimals: 6,
   },
   base: {
-    address: (import.meta.env.NEXT_PUBLIC_BASE_TOKEN_ADDRESS || '') as Hex,
+    address: CONTRACTS.base.token as Hex,
     symbol: 'USDC',
     decimals: 6,
   },
@@ -62,14 +68,14 @@ export const TOKENS = {
 export const TIMING = {
   // Polling intervals
   fillerPollIntervalMs: 5000, // 5 seconds
-  balancePollIntervalMs: 30000, // 30 seconds
+  balancePollIntervalMs: APP_TIMING.balancePollInterval,
 
   // Timeouts
-  maxWaitForFillerMs: 300000, // 5 minutes
+  maxWaitForFillerMs: APP_TIMING.solverMaxWait,
   aztecTxTimeoutMs: 120000, // 2 minutes
 
   // Default fill deadline (2 hours from now)
-  defaultFillDeadlineSeconds: 7200,
+  defaultFillDeadlineSeconds: APP_TIMING.defaultTimelockSeconds,
 } as const
 
 // =============================================================================
@@ -82,6 +88,8 @@ export function isConfigured(): boolean {
 
 export function logConfig(): void {
   console.log('[Substance Bridge] Configuration:')
+  console.log('  Base Network:', BASE_NETWORK)
+  console.log('  Base Chain ID:', BASE_CHAIN.id)
   console.log('  Aztec Token:', TOKENS.aztec.address || '(not set)')
   console.log('  Base Token:', TOKENS.base.address || '(not set)')
   console.log('  Configured:', isConfigured())

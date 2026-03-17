@@ -10,13 +10,21 @@ User (Aztec private balance)
     ▼
 ┌─────────────────────────────────────────────────────┐
 │  1. Derive Burner Key (MetaMask signature)          │
-│  2. Bridge: Aztec → Burner Smart Account (Base)     │
+│  2. Bridge: Aztec → Base burner via bridge layer    │
 │  3. Create zkp2p Deposit (gasless via Paymaster)    │
 └─────────────────────────────────────────────────────┘
     │
     ▼
 zkp2p Deposit (owned by fresh burner address)
 ```
+
+## Current Integration Modes
+
+- `NEXT_PUBLIC_BRIDGE_ONLY_MODE=true`: local bridge test mode. The flow stops after the burner receives Base USDC.
+- `NEXT_PUBLIC_BRIDGE_ONLY_MODE=false`: continue into the sponsored zkp2p deposit flow after burner funding.
+- `NEXT_PUBLIC_BASE_NETWORK=mainnet|sepolia`: switches Base chain defaults, RPC, explorer, and default USDC address.
+
+The bridge flow now lives entirely in `frontend/src/lib/nearIntents`. There is no separate local solver service to run. For local development, the current pre-alpha bridge path can still auto-fund the burner and auto-fill Aztec using `NEXT_PUBLIC_*` bridge keys. Those values are embedded in the browser bundle, so this mode is for local testing only and must not be treated as a deployable production setup.
 
 ## Burner Address Derivation
 
@@ -97,9 +105,19 @@ The burner smart account uses **Coinbase Paymaster** for gas sponsorship:
    ```
 3. Configure gas policy in the dashboard (recommended: $50 global, $10 per user)
 
+## Local Bridge Setup
+
+For local end-to-end testing, the frontend can use bridge-side accounts directly:
+
+```bash
+NEXT_PUBLIC_SOLVER_AZTEC_ADDRESS=
+NEXT_PUBLIC_AZTEC_SENDER_ADDRESSES=
+NEXT_PUBLIC_BRIDGE_ONLY_MODE=true
+```
+
+If you also set the bridge private keys in `frontend/.env.local`, the browser app will auto-send Base USDC and auto-fill Aztec during the bridge flow. That is convenient for local development and unsafe for any shared or production deployment, because `NEXT_PUBLIC_*` env vars are exposed client-side.
+
 ## TODO
 
 - [x] Make Base accounts fresh each time per deposit
 - [ ] Update to use Holonym USDC contracts integration
-- [ ] Allow for any solver (generic Train protocol)
-- [ ] Train integration - check solver rewards

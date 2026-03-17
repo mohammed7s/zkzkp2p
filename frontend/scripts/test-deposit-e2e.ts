@@ -10,7 +10,7 @@
  *   3. Create gasless zkp2p deposit via Coinbase Paymaster
  *
  * Usage (from frontend/):
- *   # Full flow (needs a running solver + Aztec account with USDC)
+ *   # Full flow (needs bridge fill configured + Aztec account with USDC)
  *   EVM_PRIVATE_KEY=0x... AZTEC_SECRET_KEY=0x... npx tsx scripts/test-deposit-e2e.ts
  *
  *   # Skip bridge, test burner + zkp2p deposit (assumes funds already on burner)

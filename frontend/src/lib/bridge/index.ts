@@ -38,7 +38,6 @@ import { TOKENS, BASE_CHAIN, TIMING } from './config'
 import type { Hex } from 'viem'
 import type { BridgeFlowState } from './types'
 import { padHex } from 'viem'
-import { base } from 'viem/chains'
 
 /**
  * Create a Bridge instance configured for zkzkp2p
@@ -136,7 +135,7 @@ export async function executeShield(params: {
 
   const result = await bridge.openOrder(
     {
-      chainIdIn: base.id,
+      chainIdIn: BASE_CHAIN.id,
       chainIdOut: aztecSepolia.id,
       amountIn: amount,
       amountOut: amount, // 1:1 for same token

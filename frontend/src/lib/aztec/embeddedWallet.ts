@@ -105,6 +105,42 @@ export function deriveSigningKey(secret: Fr): Buffer {
   return Buffer.from(hex.replace('0x', ''), 'hex');
 }
 
+function getKnownSenders(ownAztecAddress: string): string[] {
+  const configured = String(import.meta.env.NEXT_PUBLIC_AZTEC_SENDER_ADDRESSES || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  const solver = String(import.meta.env.NEXT_PUBLIC_SOLVER_AZTEC_ADDRESS || '').trim();
+
+  // Include self explicitly so self-sends are always discoverable even on fresh stores.
+  const candidates = [...configured, solver, ownAztecAddress];
+  return Array.from(new Set(candidates.map(a => a.toLowerCase())));
+}
+
+async function registerKnownSenders(wallet: EmbeddedWallet, ownAztecAddress: string): Promise<void> {
+  const senders = getKnownSenders(ownAztecAddress);
+  const own = ownAztecAddress.toLowerCase();
+  if (senders.length === 0) return;
+
+  try {
+    const { AztecAddress } = await import('@aztec/aztec.js/addresses');
+    for (const sender of senders) {
+      try {
+        await wallet.registerSender(AztecAddress.fromString(sender), sender === own ? 'self' : 'known');
+      } catch (e: any) {
+        console.warn('[EmbeddedWallet] Failed to register sender:', sender, e?.message || e);
+      }
+    }
+
+    if (typeof (wallet as any).getAddressBook === 'function') {
+      const addressBook = await (wallet as any).getAddressBook();
+      console.log('[EmbeddedWallet] Sender address book size:', addressBook?.length ?? 0);
+    }
+  } catch (e: any) {
+    console.warn('[EmbeddedWallet] Sender registration setup failed:', e?.message || e);
+  }
+}
+
 /**
  * Connect to Aztec using MetaMask-derived keys via EmbeddedWallet.
  *
@@ -232,6 +268,52 @@ async function createWalletWithKeys(
   const aztecAddress = account.address.toString();
   console.log('[EmbeddedWallet] Account address:', aztecAddress);
 
+  // Register SponsoredFPC for fee-free transactions
+  try {
+    console.log('[EmbeddedWallet] Registering SponsoredFPC...');
+    const { SponsoredFPCContract } = await import('@aztec/noir-contracts.js/SponsoredFPC');
+    const { getContractInstanceFromInstantiationParams } = await import('@aztec/stdlib/contract');
+    const sponsoredFPCInstance = await getContractInstanceFromInstantiationParams(
+      SponsoredFPCContract.artifact,
+      { salt: new Fr(0) },
+    );
+    await wallet.registerContract(sponsoredFPCInstance, SponsoredFPCContract.artifact);
+    console.log('[EmbeddedWallet] SponsoredFPC registered at', sponsoredFPCInstance.address.toString());
+  } catch (e: any) {
+    console.warn('[EmbeddedWallet] Failed to register SponsoredFPC:', e.message);
+  }
+
+  // Deploy account on-chain if not already deployed (required for sending private txs)
+  try {
+    const { AztecAddress: AztecAddr } = await import('@aztec/aztec.js/addresses');
+    const { createAztecNodeClient } = await import('@aztec/aztec.js/node');
+    const nodeClient = createAztecNodeClient(nodeUrl);
+    const deployed = await nodeClient.getContract(AztecAddr.fromString(aztecAddress));
+    if (!deployed) {
+      console.log('[EmbeddedWallet] Account not deployed on-chain, deploying...');
+      const { SponsoredFeePaymentMethod } = await import('@aztec/aztec.js/fee/testing');
+      const { SponsoredFPCContract } = await import('@aztec/noir-contracts.js/SponsoredFPC');
+      const { getContractInstanceFromInstantiationParams } = await import('@aztec/stdlib/contract');
+      const sponsoredFPCInstance = await getContractInstanceFromInstantiationParams(
+        SponsoredFPCContract.artifact,
+        { salt: new Fr(0) },
+      );
+      const paymentMethod = new SponsoredFeePaymentMethod(sponsoredFPCInstance.address);
+      const deployMethod = await account.getDeployMethod();
+      const t2 = Date.now();
+      const receipt = await deployMethod.send({
+        from: account.address,
+        fee: { paymentMethod },
+        wait: { timeout: 300 },
+      });
+      console.log('[EmbeddedWallet] Account deployed in', Date.now() - t2, 'ms');
+    } else {
+      console.log('[EmbeddedWallet] Account already deployed on-chain');
+    }
+  } catch (e: any) {
+    console.warn('[EmbeddedWallet] Account deployment failed (can retry later):', e.message);
+  }
+
   // Register token contract (class + instance) so balance queries and transfers work
   const { CONTRACTS } = await import('@/config');
   const tokenAddress = CONTRACTS.aztec.token;
@@ -261,6 +343,10 @@ async function createWalletWithKeys(
       console.warn('[EmbeddedWallet] Failed to register token contract:', e.message);
     }
   }
+
+  // PXE only discovers incoming private logs for known senders.
+  // Add self and optional external senders (NEXT_PUBLIC_AZTEC_SENDER_ADDRESSES=0x...,0x...).
+  await registerKnownSenders(wallet, aztecAddress);
 
   // Cache the wallet in memory
   cachedWallet = {

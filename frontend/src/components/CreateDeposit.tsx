@@ -67,6 +67,7 @@ const STAGE_DETAILS: Record<DepositStage, string> = {
 };
 
 export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepositProps) {
+  const bridgeOnlyMode = import.meta.env.NEXT_PUBLIC_BRIDGE_ONLY_MODE !== 'false';
   const [amount, setAmount] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<typeof PAYMENT_METHODS[number]>('revolut');
   const [currency, setCurrency] = useState<typeof CURRENCIES[number]>('USD');
@@ -162,7 +163,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
 
   // Check if bridge and paymaster are configured
   const bridgeConfigured = isBridgeConfigured();
-  const paymasterConfigured = isPaymasterConfigured();
+  const paymasterConfigured = bridgeOnlyMode ? true : isPaymasterConfigured();
 
   // Handler to recover burner funds
   const handleRecoverBurner = useCallback(async () => {
@@ -239,12 +240,12 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       return;
     }
 
-    if (!paymentTag.trim()) {
+    if (!bridgeOnlyMode && !paymentTag.trim()) {
       setError('enter your payment tag');
       return;
     }
 
-    if (!paymasterConfigured) {
+    if (!bridgeOnlyMode && !paymasterConfigured) {
       setError('paymaster not configured - add NEXT_PUBLIC_COINBASE_PAYMASTER_RPC_URL to .env');
       return;
     }
@@ -330,6 +331,11 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
           onWaitingForFunds: (addr) => {
             console.log('[Deposit] Waiting for solver to fill:', addr);
           },
+          onFundsSentTx: (txHash) => {
+            console.log('[Deposit] Solver Base tx sent:', txHash);
+            setBaseTxHash(txHash);
+            updateDepositFlow({ txHashes: { claim: txHash } });
+          },
           onFundsReceived: (bal) => {
             console.log('[Deposit] Funds received:', bal.toString());
             updateDepositFlow({ status: 'claiming' });
@@ -344,6 +350,26 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
 
       console.log('[Deposit] Bridge complete, received:', receivedBalance.toString());
       onRefreshBalances(true);
+
+      if (bridgeOnlyMode) {
+        console.log('[Deposit] Bridge-only mode complete. Burner funded; skipping peer.xyz deposit.');
+        setStage('complete');
+        completeDepositFlow();
+
+        setTimeout(() => {
+          setStage('idle');
+          setAmount('');
+          setPaymentTag('');
+          setAztecTxHash(null);
+          setBaseTxHash(null);
+          setWaitingTime(0);
+          setBurnerAddress(null);
+          burnerKeyRef.current = null;
+          flowRef.current = null;
+          onRefreshBalances();
+        }, 3000);
+        return;
+      }
 
       // ====================================================================
       // Step 3: Create zkp2p deposit using sponsored smart account (GASLESS)
@@ -485,6 +511,11 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
           paymaster not configured - add NEXT_PUBLIC_COINBASE_PAYMASTER_RPC_URL
         </div>
       )}
+      {bridgeOnlyMode && (
+        <div className="text-xs text-blue-500 border border-blue-900 p-2">
+          bridge-only test mode enabled - flow stops after burner funding
+        </div>
+      )}
 
       {/* Available Balance */}
       <div className="flex justify-between text-xs text-gray-500 border-b border-gray-800 pb-2">
@@ -518,62 +549,66 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
         )}
       </div>
 
-      {/* Payment Method */}
-      <div className="space-y-2">
-        <label className="text-xs text-gray-600">via</label>
-        <div className="flex gap-2">
-          {PAYMENT_METHODS.map((method) => (
-            <button
-              key={method}
-              onClick={() => setPaymentMethod(method)}
-              disabled={isCreating}
-              className={`flex-1 py-2 text-sm border transition-colors ${
-                paymentMethod === method
-                  ? 'border-gray-400 text-white'
-                  : 'border-gray-800 text-gray-600 hover:border-gray-700'
-              } disabled:opacity-50`}
-            >
-              {method}
-            </button>
-          ))}
-        </div>
-      </div>
+      {!bridgeOnlyMode && (
+        <>
+          {/* Payment Method */}
+          <div className="space-y-2">
+            <label className="text-xs text-gray-600">via</label>
+            <div className="flex gap-2">
+              {PAYMENT_METHODS.map((method) => (
+                <button
+                  key={method}
+                  onClick={() => setPaymentMethod(method)}
+                  disabled={isCreating}
+                  className={`flex-1 py-2 text-sm border transition-colors ${
+                    paymentMethod === method
+                      ? 'border-gray-400 text-white'
+                      : 'border-gray-800 text-gray-600 hover:border-gray-700'
+                  } disabled:opacity-50`}
+                >
+                  {method}
+                </button>
+              ))}
+            </div>
+          </div>
 
-      {/* Currency */}
-      <div className="space-y-2">
-        <label className="text-xs text-gray-600">receive</label>
-        <div className="flex gap-2">
-          {CURRENCIES.map((curr) => (
-            <button
-              key={curr}
-              onClick={() => setCurrency(curr)}
-              disabled={isCreating}
-              className={`flex-1 py-2 text-sm border transition-colors ${
-                currency === curr
-                  ? 'border-gray-400 text-white'
-                  : 'border-gray-800 text-gray-600 hover:border-gray-700'
-              } disabled:opacity-50`}
-            >
-              {curr}
-            </button>
-          ))}
-        </div>
-      </div>
+          {/* Currency */}
+          <div className="space-y-2">
+            <label className="text-xs text-gray-600">receive</label>
+            <div className="flex gap-2">
+              {CURRENCIES.map((curr) => (
+                <button
+                  key={curr}
+                  onClick={() => setCurrency(curr)}
+                  disabled={isCreating}
+                  className={`flex-1 py-2 text-sm border transition-colors ${
+                    currency === curr
+                      ? 'border-gray-400 text-white'
+                      : 'border-gray-800 text-gray-600 hover:border-gray-700'
+                  } disabled:opacity-50`}
+                >
+                  {curr}
+                </button>
+              ))}
+            </div>
+          </div>
 
-      {/* Payment Tag */}
-      <div className="space-y-2">
-        <label className="text-xs text-gray-600">
-          {paymentMethod === 'revolut' ? 'revtag' : paymentMethod === 'venmo' ? 'venmo username' : 'email'}
-        </label>
-        <input
-          type="text"
-          value={paymentTag}
-          onChange={(e) => setPaymentTag(e.target.value)}
-          placeholder={paymentMethod === 'revolut' ? '@username' : 'you@example.com'}
-          className="w-full bg-transparent px-3 py-2 border border-gray-800 focus:border-gray-600 outline-none"
-          disabled={isCreating}
-        />
-      </div>
+          {/* Payment Tag */}
+          <div className="space-y-2">
+            <label className="text-xs text-gray-600">
+              {paymentMethod === 'revolut' ? 'revtag' : paymentMethod === 'venmo' ? 'venmo username' : 'email'}
+            </label>
+            <input
+              type="text"
+              value={paymentTag}
+              onChange={(e) => setPaymentTag(e.target.value)}
+              placeholder={paymentMethod === 'revolut' ? '@username' : 'you@example.com'}
+              className="w-full bg-transparent px-3 py-2 border border-gray-800 focus:border-gray-600 outline-none"
+              disabled={isCreating}
+            />
+          </div>
+        </>
+      )}
 
       {/* Status Stages */}
       {stage !== 'idle' && stage !== 'error' && (
@@ -717,7 +752,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
           disabled={!amount || !hasEnoughBalance || !evmAddress || hasActiveFlow}
           className="w-full py-3 border border-gray-600 hover:border-white hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
         >
-          create deposit
+          {bridgeOnlyMode ? 'fund burner' : 'create deposit'}
         </button>
       )}
 
@@ -730,7 +765,11 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       <div className="text-xs text-gray-700 space-y-1">
         <p>deposits are created from a fresh burner address for privacy</p>
         <p>gas is sponsored - no ETH needed on the burner</p>
-        <p className="text-yellow-800">pre-alpha: bridge is mocked - send USDC manually to burner</p>
+        <p className="text-yellow-800">
+          {bridgeOnlyMode
+            ? 'pre-alpha: bridge-only test mode - burner funding only'
+            : 'pre-alpha: bridge uses a hardcoded mock solver'}
+        </p>
       </div>
 
       {/* Completed Flow History */}

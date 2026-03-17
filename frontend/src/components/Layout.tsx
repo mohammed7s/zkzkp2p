@@ -11,6 +11,7 @@ import {
   formatTokenAmount,
   TOKENS,
 } from '@/lib/bridge';
+import { TIMING } from '@/config';
 import { usePublicClient } from 'wagmi';
 import { CreateDeposit } from './CreateDeposit';
 import { TransactionHistory } from './TransactionHistory';
@@ -226,16 +227,20 @@ export function Layout() {
   }, [publicClient, evmAddress, aztecWallet, aztecAddress, isAztecTxPending]);
 
   useEffect(() => {
-    if (mounted && isAztecConnected && !isAztecTxPending) {
+    if (mounted && (isAztecConnected || isEvmConnected) && !isAztecTxPending) {
       const initialTimeout = setTimeout(() => {
         fetchBalances();
       }, 2000);
+      const pollInterval = setInterval(() => {
+        fetchBalances();
+      }, TIMING.balancePollInterval);
 
       return () => {
         clearTimeout(initialTimeout);
+        clearInterval(pollInterval);
       };
     }
-  }, [fetchBalances, mounted, isAztecConnected, isAztecTxPending]);
+  }, [fetchBalances, mounted, isAztecConnected, isEvmConnected, isAztecTxPending]);
 
   const handleDisconnect = async () => {
     try {

@@ -20,7 +20,6 @@
     "@aztec/wallet-sdk": "4.0.0-devnet.2-patch.1",
     "@aztec/wallets": "4.0.0-devnet.2-patch.1",
     "@defi-wonderland/aztec-standards": "3.0.0-devnet.6-patch.1",
-    "@nemi-fi/wallet-sdk": "^2.0.3",
     "@rainbow-me/rainbowkit": "^2.2.0",
     "@substancelabs/aztec-evm-bridge-sdk": "file:./vendor/substance-sdk",
     "@tanstack/react-query": "^5.60.0",

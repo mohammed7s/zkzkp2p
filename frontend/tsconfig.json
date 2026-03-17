@@ -19,5 +19,10 @@
     "types": ["vite/client"]
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "vite-env.d.ts"],
-  "exclude": ["node_modules", "scripts"]
+  "exclude": [
+    "node_modules",
+    "scripts",
+    "src/components/docs/**/*",
+    "src/lib/aztec/__tests__/**/*"
+  ]
 }

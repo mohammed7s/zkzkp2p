@@ -8,12 +8,12 @@
  */
 
 import { http, createPublicClient, type Hex, type PublicClient } from 'viem';
-import { base } from 'viem/chains';
 import { entryPoint07Address } from 'viem/account-abstraction';
 import { privateKeyToAccount } from 'viem/accounts';
 import { createSmartAccountClient } from 'permissionless';
 import { toSimpleSmartAccount } from 'permissionless/accounts';
 import { createPimlicoClient } from 'permissionless/clients/pimlico';
+import { BASE_CHAIN, CHAINS } from '@/config';
 
 // Get RPC URL from env - this should be your Coinbase Paymaster endpoint
 // Format: https://api.developer.coinbase.com/rpc/v1/base/<API_KEY>
@@ -40,8 +40,8 @@ export function isPaymasterConfigured(): boolean {
  */
 export function createPaymasterPublicClient(): PublicClient {
   return createPublicClient({
-    chain: base,
-    transport: http(getPaymasterRpcUrl()),
+    chain: BASE_CHAIN,
+    transport: http(CHAINS.base.rpcUrl),
   }) as PublicClient;
 }
 
@@ -78,13 +78,13 @@ export async function createSponsoredSmartAccountClient(privateKey: Hex) {
   const rpcUrl = getPaymasterRpcUrl();
 
   const publicClient = createPublicClient({
-    chain: base,
+    chain: BASE_CHAIN,
     transport: http(rpcUrl),
   });
 
   // Create the paymaster client (handles gas sponsorship)
   const paymasterClient = createPimlicoClient({
-    chain: base,
+    chain: BASE_CHAIN,
     transport: http(rpcUrl),
     entryPoint: {
       address: entryPoint07Address,
@@ -98,7 +98,7 @@ export async function createSponsoredSmartAccountClient(privateKey: Hex) {
   // Create the smart account client with paymaster
   const smartAccountClient = createSmartAccountClient({
     account: smartAccount,
-    chain: base,
+    chain: BASE_CHAIN,
     paymaster: paymasterClient,
     bundlerTransport: http(rpcUrl),
     userOperation: {
