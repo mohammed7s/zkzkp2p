@@ -18,8 +18,7 @@
 
 import { type PublicClient, type Hex, erc20Abi, createWalletClient, http } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { base } from 'viem/chains';
-import { CONTRACTS, CHAINS } from '@/config';
+import { BASE_CHAIN, CONTRACTS, CHAINS } from '@/config';
 
 // ============================================================================
 // NEAR 1Click API Types
@@ -213,16 +212,6 @@ export function isSolverConfigured(): boolean {
   return !!(aztecAddress && tokenAddress && CONTRACTS.base.token);
 }
 
-function isKnownMockDebitFailure(error: unknown): boolean {
-  const message =
-    error instanceof Error ? error.message : typeof error === 'string' ? error : '';
-  return (
-    message.includes('Failed to get a note') ||
-    message.includes('self.is_some()') ||
-    message.includes('Invalid tx: Invalid proof')
-  );
-}
-
 /**
  * Send private USDC on Aztec to the solver address.
  * This is the "Aztec side" of the mock bridge — the solver sees
@@ -308,8 +297,8 @@ function getSolverBaseWallet() {
   const account = privateKeyToAccount(privateKey);
   const wallet = createWalletClient({
     account,
-    chain: base,
-    transport: http(import.meta.env.NEXT_PUBLIC_BASE_RPC_URL || 'https://mainnet.base.org'),
+    chain: BASE_CHAIN,
+    transport: http(CHAINS.base.rpcUrl),
   });
   return { wallet, account };
 }
@@ -731,25 +720,11 @@ export async function executeBridge(params: {
 
   // Step 1: Send Aztec private USDC to solver
   callbacks?.onSendingToSolver();
-  let aztecTxHash: string;
-  try {
-    aztecTxHash = await sendToSolver({
-      aztecWallet,
-      senderAddress: aztecSender,
-      amount,
-    });
-  } catch (error) {
-    if (!isKnownMockDebitFailure(error)) {
-      throw error;
-    }
-
-    console.warn(
-      '[NearIntents/Mock] User private debit failed in browser wallet. ' +
-      'Continuing with mock bridge handoff so the Base-side flow can still be tested.',
-      error,
-    );
-    aztecTxHash = `mock-bypass-${Date.now()}`;
-  }
+  const aztecTxHash = await sendToSolver({
+    aztecWallet,
+    senderAddress: aztecSender,
+    amount,
+  });
   callbacks?.onSolverTxConfirmed(aztecTxHash);
 
   // Step 2: Wait for solver to send Base USDC to burner

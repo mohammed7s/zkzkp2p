@@ -25,6 +25,37 @@ as the cross-chain layer. zkp2p stays as the fiat on/offramp.
 NEAR Intents Aztec connector is ~weeks out. We mock the bridge step so
 everything else can be tested now.
 
+## Current Checkpoint
+
+- Base/Base Sepolia env toggle is wired through central config and the mock solver wallet.
+- Shield flow is working on Base Sepolia.
+- Burner smart-account sponsorship is wired via Coinbase Paymaster for the zkp2p deposit leg.
+- Direct Aztec private transfer works from scripts for:
+  - solver Schnorr account -> user account
+  - the exact app ECDSA-K account -> solver account
+- Mock solver Base funding works only when the solver wallet has Base Sepolia ETH for gas and uses the Sepolia chain config.
+- The temporary mock Aztec debit bypass has been removed. The bridge now requires a real private transfer to the solver.
+
+## Remaining Blocker
+
+- The in-app browser ECDSA-K send path still fails before the solver handoff, even though the equivalent standalone script succeeds.
+- Working standalone reference:
+  - `frontend/scripts/test-private-transfer-ecdsa.ts`
+- Failing in-app path:
+  - `frontend/src/lib/aztec/embeddedWallet.ts`
+  - `frontend/src/lib/nearIntents/index.ts` via `sendToSolver()`
+
+## Next Steps
+
+1. Compare the browser EmbeddedWallet setup against `test-private-transfer-ecdsa.ts` and remove any state/config differences.
+2. Make the app use the same successful ECDSA account deployment + sponsored private transfer pattern as the script.
+3. Re-test deposit flow and verify:
+   - user private balance decreases
+   - solver private balance increases
+   - burner receives Base USDC
+   - zkp2p deposit still executes gaslessly
+4. After the real Aztec debit works, add flow recovery/status reconciliation instead of any bypass logic.
+
 ### What's mocked
 - The Aztec <-> Base bridge (currently Substance, will be NEAR Intents)
 - A "solver" manually sends USDC to the burner address on Base
