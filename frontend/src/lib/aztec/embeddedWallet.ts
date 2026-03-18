@@ -100,9 +100,10 @@ export function deriveSalt(address: string): Fr {
  * Derive a signing key buffer from the secret (for ECDSA K accounts)
  */
 export function deriveSigningKey(secret: Fr): Buffer {
-  // Use the secret bytes directly as the 32-byte signing key
-  const hex = secret.toString();
-  return Buffer.from(hex.replace('0x', ''), 'hex');
+  // ECDSA-K expects a 32-byte secp256k1 private key. `Fr.toString()` omits
+  // leading zeroes, so pad explicitly to keep the numeric key stable.
+  const hex = secret.toString().replace('0x', '').padStart(64, '0').slice(-64);
+  return Buffer.from(hex, 'hex');
 }
 
 function getKnownSenders(ownAztecAddress: string): string[] {
@@ -301,8 +302,10 @@ async function createWalletWithKeys(
       const paymentMethod = new SponsoredFeePaymentMethod(sponsoredFPCInstance.address);
       const deployMethod = await account.getDeployMethod();
       const t2 = Date.now();
-      const receipt = await deployMethod.send({
-        from: account.address,
+      await deployMethod.send({
+        // New account deployment is initiated by the deployer entrypoint, not the
+        // account itself. Using ZERO matches the working local create-account flow.
+        from: AztecAddr.ZERO,
         fee: { paymentMethod },
         wait: { timeout: 300 },
       });
