@@ -56,3 +56,7 @@ solver/.env.solver
 .debug/
 
 ./solver
+
+# Persistent PXE data
+frontend/pxe_data_*/
+frontend/wallet_data_*/

@@ -1,23 +1,30 @@
 /**
- * Burner Address Derivation (Two-Layer)
+ * Burner Address Derivation (Two-Layer, Sequential Index)
  *
- * Layer 1: Master key - derived from a fixed message, re-derivable anytime
- * Layer 2: Burner key - derived from master key + timestamp nonce
+ * Layer 1: Master key - derived from a MetaMask signature, re-derivable anytime
+ * Layer 2: Burner key - derived from master key + sequential index (0, 1, 2, ...)
  *
  * Recovery (if localStorage is lost):
  * 1. Re-sign master message → get master key
- * 2. Brute-force nonce locally (no MetaMask popups): try timestamps in range
- * 3. Find the nonce that produces the lost burner address
+ * 2. Scan burner_0, burner_1, ... checking USDC balance on each
+ * 3. Any funded burner is a pending flow to recover
+ * 4. Next unused index = first with zero balance after N consecutive empties
  */
 
-import { keccak256, type Hex, type WalletClient, encodePacked } from 'viem';
+import { keccak256, type Hex, type WalletClient, type PublicClient, encodePacked, erc20Abi } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
 // Version for the derivation scheme - bump if changing the algorithm
-const DERIVATION_VERSION = 'v2';
+const DERIVATION_VERSION = 'v3';
 
 // Domain separator for zkzkp2p
 const DOMAIN = 'zkzkp2p';
+
+// How many consecutive empty burners before we stop scanning
+const SCAN_EMPTY_THRESHOLD = 3;
+
+// localStorage key for persisting the next burner index
+const INDEX_STORAGE_KEY = 'zkzkp2p-burner-next-index';
 
 // ============================================================================
 // Master Key (Layer 1) - Re-derivable anytime
@@ -40,7 +47,7 @@ export function getMasterKeyMessage(mainAddress: Hex): string {
  * Derive the master key from a MetaMask signature
  */
 export function deriveMasterKey(signature: Hex): Hex {
-  return keccak256(encodePacked(['string', 'bytes'], [DOMAIN + '-master', signature]));
+  return keccak256(encodePacked(['string', 'bytes'], [DOMAIN + '-master-' + DERIVATION_VERSION, signature]));
 }
 
 /**
@@ -52,12 +59,10 @@ export async function getMasterKey(
   walletClient: WalletClient,
   mainAddress: Hex
 ): Promise<Hex> {
-  // Return cached if same address
   if (cachedMasterKey && cachedMasterKey.address.toLowerCase() === mainAddress.toLowerCase()) {
     return cachedMasterKey.key;
   }
 
-  // Request signature
   const message = getMasterKeyMessage(mainAddress);
   const signature = await walletClient.signMessage({
     account: mainAddress,
@@ -65,8 +70,6 @@ export async function getMasterKey(
   });
 
   const masterKey = deriveMasterKey(signature as Hex);
-
-  // Cache for session
   cachedMasterKey = { address: mainAddress, key: masterKey };
 
   return masterKey;
@@ -80,23 +83,14 @@ export function clearMasterKeyCache(): void {
 }
 
 // ============================================================================
-// Burner Key (Layer 2) - Derived from master + nonce
+// Burner Key (Layer 2) - Sequential index derivation
 // ============================================================================
 
 /**
- * Generate a timestamp-based nonce (minute precision)
- * This allows brute-forcing ~43k attempts per month if lost
+ * Derive a burner private key from master key + index
  */
-export function generateNonce(): number {
-  return Math.floor(Date.now() / 60000); // Minutes since epoch
-}
-
-/**
- * Derive a burner private key from master key + nonce
- */
-export function deriveBurnerKeyFromMaster(masterKey: Hex, nonce: number): Hex {
-  // Use encodePacked for proper type handling (masterKey is bytes32, nonce as uint64)
-  return keccak256(encodePacked(['bytes32', 'uint64'], [masterKey, BigInt(nonce)]));
+export function deriveBurnerKey(masterKey: Hex, index: number): Hex {
+  return keccak256(encodePacked(['bytes32', 'uint64'], [masterKey, BigInt(index)]));
 }
 
 /**
@@ -107,150 +101,228 @@ export function getAddressFromPrivateKey(privateKey: Hex): Hex {
 }
 
 // ============================================================================
-// Main Derivation Function
+// Index Management (localStorage)
+// ============================================================================
+
+function getStorageKey(mainAddress: Hex): string {
+  return `${INDEX_STORAGE_KEY}:${mainAddress.toLowerCase()}`;
+}
+
+/**
+ * Get the next burner index from localStorage
+ */
+export function getNextIndex(mainAddress: Hex): number {
+  try {
+    const stored = localStorage.getItem(getStorageKey(mainAddress));
+    return stored ? parseInt(stored, 10) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Save the next burner index to localStorage
+ */
+export function setNextIndex(mainAddress: Hex, index: number): void {
+  try {
+    localStorage.setItem(getStorageKey(mainAddress), String(index));
+  } catch {}
+}
+
+// ============================================================================
+// Scanning - Find funded burners on-chain
+// ============================================================================
+
+export interface FundedBurner {
+  index: number;
+  privateKey: Hex;
+  eoaAddress: Hex;
+  smartAccountAddress: Hex;
+  balance: bigint;
+}
+
+/**
+ * Scan burner addresses for USDC balance.
+ * Returns all funded burners and the next free index.
+ */
+export async function scanBurners(
+  masterKey: Hex,
+  publicClient: PublicClient,
+  tokenAddress: Hex,
+  getSmartAccountAddress: (privateKey: Hex) => Promise<Hex>,
+  opts?: { maxIndex?: number; onProgress?: (index: number) => void }
+): Promise<{
+  fundedBurners: FundedBurner[];
+  nextFreeIndex: number;
+}> {
+  const maxIndex = opts?.maxIndex ?? 50;
+  const fundedBurners: FundedBurner[] = [];
+  let consecutiveEmpty = 0;
+  let nextFreeIndex = 0;
+
+  for (let i = 0; i < maxIndex; i++) {
+    opts?.onProgress?.(i);
+
+    const privateKey = deriveBurnerKey(masterKey, i);
+    const eoaAddress = getAddressFromPrivateKey(privateKey);
+
+    let smartAccountAddress: Hex;
+    try {
+      smartAccountAddress = await getSmartAccountAddress(privateKey);
+    } catch {
+      // If smart account derivation fails, skip
+      consecutiveEmpty++;
+      if (consecutiveEmpty >= SCAN_EMPTY_THRESHOLD) {
+        nextFreeIndex = i - SCAN_EMPTY_THRESHOLD + 1;
+        // But nextFreeIndex should be after any funded one
+        break;
+      }
+      continue;
+    }
+
+    // Check USDC balance on smart account
+    let balance = 0n;
+    try {
+      balance = await publicClient.readContract({
+        address: tokenAddress,
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [smartAccountAddress],
+      });
+    } catch {}
+
+    if (balance > 0n) {
+      fundedBurners.push({
+        index: i,
+        privateKey,
+        eoaAddress,
+        smartAccountAddress,
+        balance,
+      });
+      consecutiveEmpty = 0;
+    } else {
+      consecutiveEmpty++;
+      if (consecutiveEmpty >= SCAN_EMPTY_THRESHOLD && i > 0) {
+        break;
+      }
+    }
+  }
+
+  // Next free index: max of (stored index, highest funded + 1, first gap after consecutive empties)
+  const highestFunded = fundedBurners.length > 0
+    ? Math.max(...fundedBurners.map(b => b.index)) + 1
+    : 0;
+  nextFreeIndex = Math.max(nextFreeIndex, highestFunded);
+
+  return { fundedBurners, nextFreeIndex };
+}
+
+// ============================================================================
+// Main API
 // ============================================================================
 
 /**
- * Derive a fresh burner for a new deposit
- *
- * 1. Gets/derives master key (may prompt MetaMask if not cached)
- * 2. Generates timestamp nonce
- * 3. Derives burner key from master + nonce
+ * Derive a fresh burner for a new deposit.
+ * Uses the next sequential index, increments it in localStorage.
  */
 export async function deriveBurner(
   walletClient: WalletClient,
   mainAddress: Hex,
-  existingNonce?: number // Pass existing nonce for recovery
+  existingIndex?: number
 ): Promise<{
   privateKey: Hex;
   eoaAddress: Hex;
-  nonce: number;
+  index: number;
 }> {
-  // Get master key (cached or prompt for signature)
   const masterKey = await getMasterKey(walletClient, mainAddress);
 
-  // Use existing nonce (recovery) or generate new one
-  const nonce = existingNonce ?? generateNonce();
+  const index = existingIndex ?? getNextIndex(mainAddress);
 
-  // Derive burner key
-  const privateKey = deriveBurnerKeyFromMaster(masterKey, nonce);
+  const privateKey = deriveBurnerKey(masterKey, index);
   const eoaAddress = getAddressFromPrivateKey(privateKey);
 
-  return {
-    privateKey,
-    eoaAddress,
-    nonce,
-  };
+  // Only increment if we're using a new index (not recovering)
+  if (existingIndex === undefined) {
+    setNextIndex(mainAddress, index + 1);
+  }
+
+  return { privateKey, eoaAddress, index };
 }
 
 /**
- * Recover a burner by re-deriving with known nonce
+ * Recover a burner by index
  */
 export async function recoverBurner(
   walletClient: WalletClient,
   mainAddress: Hex,
-  nonce: number
+  index: number
 ): Promise<{
   privateKey: Hex;
   eoaAddress: Hex;
 }> {
-  const { privateKey, eoaAddress } = await deriveBurner(walletClient, mainAddress, nonce);
+  const { privateKey, eoaAddress } = await deriveBurner(walletClient, mainAddress, index);
   return { privateKey, eoaAddress };
 }
 
-// ============================================================================
-// Emergency Recovery (brute-force nonce)
-// ============================================================================
-
 /**
- * Brute-force find the nonce that produces a given burner address
- * Used when localStorage is lost but you know the burner address
- *
- * @param masterKey - The master key (re-derived from signature)
- * @param targetAddress - The burner address to find
- * @param daysBack - How many days back to search (default 30)
- * @returns The nonce if found, null otherwise
+ * Scan and recover all funded burners.
+ * Call on page load / wallet connect to find pending flows.
  */
-export function bruteForceNonce(
-  masterKey: Hex,
-  targetAddress: Hex,
-  daysBack: number = 30
-): number | null {
-  const now = Math.floor(Date.now() / 60000);
-  const minutesBack = daysBack * 24 * 60;
-  const targetLower = targetAddress.toLowerCase();
+export async function scanAndRecover(
+  walletClient: WalletClient,
+  mainAddress: Hex,
+  publicClient: PublicClient,
+  tokenAddress: Hex,
+  getSmartAccountAddress: (privateKey: Hex) => Promise<Hex>,
+  onProgress?: (index: number) => void
+): Promise<{
+  fundedBurners: FundedBurner[];
+  nextFreeIndex: number;
+}> {
+  const masterKey = await getMasterKey(walletClient, mainAddress);
 
-  console.log(`[Recovery] Brute-forcing nonce for ${targetAddress}...`);
-  console.log(`[Recovery] Searching ${minutesBack} nonces (${daysBack} days back)`);
+  const result = await scanBurners(
+    masterKey,
+    publicClient,
+    tokenAddress,
+    getSmartAccountAddress,
+    { onProgress }
+  );
 
-  for (let i = 0; i <= minutesBack; i++) {
-    const nonce = now - i;
-    const privateKey = deriveBurnerKeyFromMaster(masterKey, nonce);
-    const address = getAddressFromPrivateKey(privateKey);
-
-    if (address.toLowerCase() === targetLower) {
-      console.log(`[Recovery] Found! Nonce: ${nonce}`);
-      return nonce;
-    }
-
-    // Progress log every 10000 iterations
-    if (i > 0 && i % 10000 === 0) {
-      console.log(`[Recovery] Checked ${i} nonces...`);
-    }
+  // Update stored index to at least the next free one
+  const currentStored = getNextIndex(mainAddress);
+  if (result.nextFreeIndex > currentStored) {
+    setNextIndex(mainAddress, result.nextFreeIndex);
   }
 
-  console.log(`[Recovery] Nonce not found in range`);
+  return result;
+}
+
+// ============================================================================
+// Deprecated: Keep old exports for backward compat during migration
+// ============================================================================
+
+/** @deprecated Use index-based derivation */
+export function generateNonce(): number {
+  return Math.floor(Date.now() / 60000);
+}
+
+/** @deprecated Use getNextIndex() */
+export function getNextDepositIndex(_address: Hex): number {
+  return 0;
+}
+
+/** @deprecated No longer needed */
+export function incrementDepositIndex(_address: Hex): number {
+  return 0;
+}
+
+/** @deprecated Use scanAndRecover instead */
+export function bruteForceNonce(): null {
   return null;
 }
 
-/**
- * Full emergency recovery flow
- *
- * 1. Prompts for master key signature
- * 2. Brute-forces to find the nonce
- * 3. Returns the recovered burner key
- */
-export async function emergencyRecoverBurner(
-  walletClient: WalletClient,
-  mainAddress: Hex,
-  targetBurnerAddress: Hex,
-  daysBack: number = 30
-): Promise<{
-  privateKey: Hex;
-  eoaAddress: Hex;
-  nonce: number;
-} | null> {
-  // Get master key
-  const masterKey = await getMasterKey(walletClient, mainAddress);
-
-  // Brute-force find the nonce
-  const nonce = bruteForceNonce(masterKey, targetBurnerAddress, daysBack);
-
-  if (nonce === null) {
-    return null;
-  }
-
-  // Re-derive the burner key
-  const privateKey = deriveBurnerKeyFromMaster(masterKey, nonce);
-  const eoaAddress = getAddressFromPrivateKey(privateKey);
-
-  return {
-    privateKey,
-    eoaAddress,
-    nonce,
-  };
-}
-
-// ============================================================================
-// Deprecated: Index-based functions (keeping for reference)
-// ============================================================================
-
-/** @deprecated Use generateNonce() instead */
-export function getNextDepositIndex(_address: Hex): number {
-  return generateNonce();
-}
-
-/** @deprecated No longer needed with timestamp nonces */
-export function incrementDepositIndex(_address: Hex): number {
-  return generateNonce();
+/** @deprecated Use scanAndRecover instead */
+export async function emergencyRecoverBurner(): Promise<null> {
+  return null;
 }

@@ -13,12 +13,14 @@ import {
 } from '@/lib/nearIntents';
 import type { BridgeFlowState, BridgeStatus } from '@/lib/bridge/types';
 import { createZkp2pDeposit } from '@/lib/zkp2p/client';
-import { ZKP2P } from '@/config';
+import { ZKP2P, BASE_EXPLORER_URL } from '@/config';
 
-// Burner derivation (two-layer: master key + timestamp nonce)
+// Burner derivation (two-layer: master key + sequential index)
 import {
   deriveBurner,
   recoverBurner,
+  scanAndRecover,
+  type FundedBurner,
 } from '@/lib/burner';
 
 // Paymaster for gasless transactions
@@ -31,6 +33,7 @@ import {
 interface CreateDepositProps {
   privateBalance: bigint;
   onRefreshBalances: (force?: boolean) => void;
+  onClose?: () => void;
 }
 
 const PAYMENT_METHODS = ZKP2P.paymentMethods;
@@ -48,25 +51,25 @@ type DepositStage =
 
 const STAGE_LABELS: Record<DepositStage, string> = {
   idle: '',
-  deriving_burner: 'derive burner key',
-  sending_to_solver: 'send to bridge',
-  waiting_for_funds: 'waiting for bridge',
-  depositing_zkp2p: 'create zkp2p deposit',
+  deriving_burner: 'deriving keys',
+  sending_to_solver: 'generating proof',
+  waiting_for_funds: 'bridging',
+  depositing_zkp2p: 'depositing',
   complete: 'complete',
   error: 'failed',
 };
 
 const STAGE_DETAILS: Record<DepositStage, string> = {
   idle: '',
-  deriving_burner: 'sign in metamask to derive one-time burner key...',
-  sending_to_solver: 'sending private USDC on aztec (confirm in wallet)...',
-  waiting_for_funds: 'waiting for solver to send USDC to burner on base...',
-  depositing_zkp2p: 'creating zkp2p deposit (gasless)...',
-  complete: 'your deposit is live on zkp2p!',
+  deriving_burner: 'signing in metamask to derive one-time burner key...',
+  sending_to_solver: 'generating zero-knowledge proof in your browser. this takes 1-2 minutes — your transaction stays completely private.',
+  waiting_for_funds: 'proof verified. bridging USDC from aztec to base...',
+  depositing_zkp2p: 'creating deposit on peer.xyz (gasless)...',
+  complete: 'your deposit is live on peer.xyz!',
   error: 'see error below',
 };
 
-export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepositProps) {
+export function CreateDeposit({ privateBalance, onRefreshBalances, onClose }: CreateDepositProps) {
   const bridgeOnlyMode = import.meta.env.NEXT_PUBLIC_BRIDGE_ONLY_MODE !== 'false';
   const [amount, setAmount] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<typeof PAYMENT_METHODS[number]>('revolut');
@@ -80,6 +83,10 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
   const [waitingTime, setWaitingTime] = useState(0);
   const [hasActiveFlow, setHasActiveFlow] = useState(false);
   const [burnerAddress, setBurnerAddress] = useState<string | null>(null);
+
+  // Funded burners found by scan (pending recovery)
+  const [fundedBurners, setFundedBurners] = useState<FundedBurner[]>([]);
+  const [isScanning, setIsScanning] = useState(false);
 
   const flowRef = useRef<BridgeFlowState | null>(null);
   const waitingTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -131,6 +138,45 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
     };
   }, []);
 
+  // Wagmi hooks (must be before any effects that use them)
+  const { address: evmAddress } = useAccount();
+  const { data: walletClient } = useWalletClient();
+  const publicClient = usePublicClient();
+
+  // Scan for funded burners on connect (auto-recovery)
+  useEffect(() => {
+    if (!evmAddress || !walletClient || !publicClient || stage !== 'idle' || hasActiveFlow) return;
+    const tokenAddr = import.meta.env.NEXT_PUBLIC_BASE_TOKEN_ADDRESS;
+    if (!tokenAddr) return;
+
+    let cancelled = false;
+    (async () => {
+      setIsScanning(true);
+      try {
+        const result = await scanAndRecover(
+          walletClient,
+          evmAddress as Hex,
+          publicClient,
+          tokenAddr as Hex,
+          getSmartAccountAddress,
+        );
+        if (!cancelled && result.fundedBurners.length > 0) {
+          console.log('[Deposit] Found funded burners:', result.fundedBurners.map(b => ({
+            index: b.index,
+            address: b.smartAccountAddress,
+            balance: b.balance.toString(),
+          })));
+          setFundedBurners(result.fundedBurners);
+        }
+      } catch (e: any) {
+        console.warn('[Deposit] Burner scan failed:', e.message);
+      } finally {
+        if (!cancelled) setIsScanning(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [evmAddress, walletClient, publicClient, stage, hasActiveFlow]);
+
   // Clear stale state when stage becomes idle
   useEffect(() => {
     if (stage === 'idle') {
@@ -153,10 +199,9 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
     setStage('idle');
   }, [clearActiveFlows]);
 
-  const { address: evmAddress } = useAccount();
+  // These are already declared above via useWalletClient/usePublicClient/useAccount for scan
+  // Keep them here as the canonical declarations for the rest of the component
   const { aztecAddress: aztecAddr, aztecWallet, setAztecTxPending } = useWalletStore();
-  const { data: walletClient } = useWalletClient();
-  const publicClient = usePublicClient();
 
   const amountBigInt = amount ? parseTokenAmount(amount) : 0n;
   const hasEnoughBalance = privateBalance >= amountBigInt;
@@ -177,11 +222,12 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       setIsCreating(true);
       setError(null);
 
-      console.log('[Deposit] Recovering burner key with nonce:', savedFlow.burner.nonce);
+      const burnerIndex = savedFlow.burner.nonce ?? 0;
+      console.log('[Deposit] Recovering burner key with index:', burnerIndex);
       const { privateKey: burnerPrivateKey, eoaAddress } = await recoverBurner(
         walletClient,
         evmAddress,
-        savedFlow.burner.nonce
+        burnerIndex
       );
 
       if (eoaAddress.toLowerCase() !== savedFlow.burner.eoaAddress.toLowerCase()) {
@@ -268,12 +314,12 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
 
     try {
       // ====================================================================
-      // Step 1: Derive burner key (master key + timestamp nonce)
+      // Step 1: Derive burner key (master key + sequential index)
       // ====================================================================
       setStage('deriving_burner');
       console.log('[Deposit] Deriving burner key...');
 
-      const { privateKey: burnerPrivateKey, eoaAddress, nonce } = await deriveBurner(
+      const { privateKey: burnerPrivateKey, eoaAddress, index: burnerIndex } = await deriveBurner(
         walletClient,
         evmAddress
       );
@@ -282,7 +328,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
       const smartAccountAddress = await getSmartAccountAddress(burnerPrivateKey);
       setBurnerAddress(smartAccountAddress);
 
-      console.log('[Deposit] Burner derived:', { nonce, eoaAddress, smartAccountAddress });
+      console.log('[Deposit] Burner derived:', { index: burnerIndex, eoaAddress, smartAccountAddress });
 
       // ====================================================================
       // Step 2: Bridge Aztec USDC → Base USDC via executeBridge()
@@ -297,7 +343,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
         createdAt: Date.now(),
         updatedAt: Date.now(),
         burner: {
-          nonce,
+          nonce: burnerIndex,
           smartAccountAddress,
           eoaAddress,
         },
@@ -437,7 +483,15 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
 
   return (
     <div className="border border-gray-800 p-6 space-y-6">
-      <div className="text-sm text-gray-500 uppercase tracking-wide">create deposit privately</div>
+      <div className="flex items-center justify-between">
+        <div className="text-sm text-gray-500 uppercase tracking-wide">deposit on peer.xyz</div>
+        {onClose && stage === 'idle' && (
+          <button
+            onClick={onClose}
+            className="text-xs text-gray-600 hover:text-gray-400"
+          >cancel</button>
+        )}
+      </div>
 
       {/* Active Flow Recovery Banner */}
       {hasActiveFlow && flowRef.current && (() => {
@@ -463,11 +517,13 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
               <div>Amount: <span className="text-white">{formatTokenAmount(flowRef.current.amount)} USDC</span></div>
               <div>Status: <span className={isStale ? 'text-red-400' : 'text-yellow-400'}>{stage}</span></div>
               {flowRef.current.burner && (
-                <div>Burner: <button
-                  onClick={() => navigator.clipboard.writeText(flowRef.current!.burner!.smartAccountAddress)}
-                  title="Click to copy"
-                  className="font-mono text-purple-400 hover:text-purple-300 cursor-pointer bg-transparent border-none p-0 text-xs"
-                >{flowRef.current.burner.smartAccountAddress.slice(0, 10)}...{flowRef.current.burner.smartAccountAddress.slice(-6)}</button></div>
+                <div>Burner: <a
+                  href={`${BASE_EXPLORER_URL}/address/${flowRef.current.burner.smartAccountAddress}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Open in explorer"
+                  className="font-mono text-purple-400 hover:text-purple-300 text-xs underline"
+                >{flowRef.current.burner.smartAccountAddress.slice(0, 10)}...{flowRef.current.burner.smartAccountAddress.slice(-6)}</a></div>
               )}
             </div>
 
@@ -499,6 +555,63 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
           </div>
         );
       })()}
+
+      {/* Funded Burners Recovery (from on-chain scan) */}
+      {fundedBurners.length > 0 && stage === 'idle' && !hasActiveFlow && (
+        <div className="border border-yellow-700 bg-yellow-900/10 p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-yellow-400 uppercase">pending burner{fundedBurners.length > 1 ? 's' : ''} found</span>
+            <button
+              onClick={() => setFundedBurners([])}
+              className="text-xs text-gray-600 hover:text-gray-400"
+            >dismiss</button>
+          </div>
+          <p className="text-xs text-gray-400">
+            {fundedBurners.length === 1
+              ? 'A burner wallet has USDC from a previous flow. Resume the deposit or withdraw.'
+              : `${fundedBurners.length} burner wallets have USDC from previous flows.`}
+          </p>
+          {fundedBurners.map((b) => (
+            <div key={b.index} className="flex items-center justify-between border border-gray-800 p-2">
+              <div className="text-xs space-y-1">
+                <div className="text-gray-400">
+                  burner #{b.index}: <a
+                    href={`${BASE_EXPLORER_URL}/address/${b.smartAccountAddress}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-mono text-purple-400 hover:text-purple-300 underline"
+                  >{b.smartAccountAddress.slice(0, 10)}...{b.smartAccountAddress.slice(-6)}</a>
+                </div>
+                <div className="text-white">{formatTokenAmount(b.balance)} USDC</div>
+              </div>
+              <button
+                onClick={async () => {
+                  if (!walletClient || !evmAddress) return;
+                  try {
+                    setIsCreating(true);
+                    const { privateKey } = await recoverBurner(walletClient, evmAddress, b.index);
+                    burnerKeyRef.current = privateKey;
+                    setBurnerAddress(b.smartAccountAddress);
+                    setAmount(formatTokenAmount(b.balance));
+                    setStage('depositing_zkp2p');
+                    setFundedBurners([]);
+                  } catch (e: any) {
+                    setError(`Recovery failed: ${e.message}`);
+                  } finally {
+                    setIsCreating(false);
+                  }
+                }}
+                className="text-xs text-yellow-400 hover:text-yellow-300 border border-yellow-800 hover:border-yellow-500 px-3 py-1"
+              >resume</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Scanning indicator */}
+      {isScanning && (
+        <div className="text-xs text-gray-500 animate-pulse">scanning burner wallets...</div>
+      )}
 
       {/* Configuration Warnings */}
       {!bridgeConfigured && (
@@ -648,8 +761,30 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
           </div>
 
           {/* Current Stage Details */}
-          {STAGE_DETAILS[stage] && (
-            <div className="text-xs text-yellow-600 pt-2 border-t border-gray-800">
+          {STAGE_DETAILS[stage] && stage !== 'complete' && (
+            <div className={`pt-2 border-t border-gray-800 ${stage === 'sending_to_solver' ? 'space-y-2' : ''}`}>
+              {stage === 'sending_to_solver' ? (
+                <div className="border border-gray-700 bg-gray-900/50 p-3 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 border-2 border-gray-500 border-t-white rounded-full animate-spin" />
+                    <span className="text-sm text-gray-300">generating zero-knowledge proof</span>
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    this takes 1-2 minutes. your transaction is being encrypted so it stays completely private on aztec.
+                  </p>
+                  <div className="w-full bg-gray-800 h-1 overflow-hidden">
+                    <div className="h-full bg-gray-600 animate-pulse" style={{ width: '60%' }} />
+                  </div>
+                </div>
+              ) : (
+                <div className="text-xs text-yellow-600 animate-pulse">
+                  {STAGE_DETAILS[stage]}
+                </div>
+              )}
+            </div>
+          )}
+          {stage === 'complete' && (
+            <div className="text-xs text-green-400 pt-2 border-t border-gray-800">
               {STAGE_DETAILS[stage]}
             </div>
           )}
@@ -658,11 +793,14 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
           {burnerAddress && stage === 'waiting_for_funds' && (
             <div className="border border-purple-800 bg-purple-900/10 p-3 space-y-2">
               <div className="text-xs text-purple-400 uppercase">send USDC to this address</div>
-              <button
-                onClick={() => { navigator.clipboard.writeText(burnerAddress).catch(() => { window.prompt('Copy address:', burnerAddress); }); }}
-                title="Click to copy"
-                className="font-mono text-sm text-white hover:text-purple-300 cursor-pointer bg-transparent border-none p-0 break-all text-left"
-              >{burnerAddress}</button>
+              <a
+                href={`${BASE_EXPLORER_URL}/address/${burnerAddress}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => { e.preventDefault(); navigator.clipboard.writeText(burnerAddress).then(() => window.open(`${BASE_EXPLORER_URL}/address/${burnerAddress}`, '_blank')).catch(() => window.open(`${BASE_EXPLORER_URL}/address/${burnerAddress}`, '_blank')); }}
+                title="Click to copy + open explorer"
+                className="font-mono text-sm text-white hover:text-purple-300 cursor-pointer break-all text-left underline decoration-purple-800 hover:decoration-purple-400"
+              >{burnerAddress}</a>
               <div className="text-xs text-gray-600">
                 amount: {formatTokenAmount(amountBigInt)} USDC on Base
               </div>
@@ -675,11 +813,13 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
           {/* Burner Address — compact for other stages */}
           {burnerAddress && stage !== 'waiting_for_funds' && (
             <div className="text-xs text-gray-600 pt-2 border-t border-gray-800">
-              burner: <button
-                onClick={() => { navigator.clipboard.writeText(burnerAddress).catch(() => { window.prompt('Copy address:', burnerAddress); }); }}
-                title="Click to copy"
-                className="font-mono text-purple-400 hover:text-purple-300 cursor-pointer bg-transparent border-none p-0"
-              >{burnerAddress.slice(0, 10)}...{burnerAddress.slice(-6)}</button>
+              burner: <a
+                href={`${BASE_EXPLORER_URL}/address/${burnerAddress}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open in explorer"
+                className="font-mono text-purple-400 hover:text-purple-300 underline"
+              >{burnerAddress.slice(0, 10)}...{burnerAddress.slice(-6)}</a>
               <span className="text-gray-700 ml-2">(gasless via paymaster)</span>
             </div>
           )}
@@ -688,7 +828,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
           {(aztecTxHash || baseTxHash) && (
             <div className="text-xs text-gray-600 pt-2 border-t border-gray-800 space-y-1">
               {aztecTxHash && (
-                <div>aztec tx: <span className="text-purple-400 font-mono">{aztecTxHash.slice(0, 10)}...{aztecTxHash.slice(-8)}</span></div>
+                <div>aztec tx: <a href={`https://testnet.aztecscan.xyz/tx-effects/${aztecTxHash}`} target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 font-mono underline">{aztecTxHash.slice(0, 10)}...{aztecTxHash.slice(-8)}</a></div>
               )}
               {baseTxHash && (
                 <div>base tx: <a href={`https://basescan.org/tx/${baseTxHash}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline">{baseTxHash.slice(0, 10)}...{baseTxHash.slice(-8)}</a></div>
@@ -709,7 +849,7 @@ export function CreateDeposit({ privateBalance, onRefreshBalances }: CreateDepos
           )}
           {aztecTxHash && (
             <div className="text-xs text-gray-600">
-              aztec tx: <span className="text-purple-400 font-mono">{aztecTxHash.slice(0, 16)}...</span>
+              aztec tx: <a href={`https://testnet.aztecscan.xyz/tx-effects/${aztecTxHash}`} target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 font-mono underline">{aztecTxHash.slice(0, 16)}...</a>
             </div>
           )}
           {baseTxHash && (

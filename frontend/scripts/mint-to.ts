@@ -31,7 +31,7 @@ if (existsSync(envPath)) {
   }
 }
 
-const AZTEC_NODE_URL = process.env.NEXT_PUBLIC_AZTEC_NODE_URL || 'https://v4-devnet-2.aztec-labs.com';
+const AZTEC_NODE_URL = process.env.NEXT_PUBLIC_AZTEC_NODE_URL || 'https://rpc.testnet.aztec-labs.com';
 const TOKEN_ADDRESS = process.env.NEXT_PUBLIC_AZTEC_TOKEN_ADDRESS;
 const ACCOUNT_FILE = resolve(__dirname, '..', '.aztec-account');
 const TOKEN_DECIMALS = 6;
@@ -73,7 +73,8 @@ async function main() {
   log(`Amount: ${mintAmount} USDC (public${alsoPrivate ? ' + private' : ''})`);
 
   const { EmbeddedWallet } = await import('@aztec/wallets/embedded');
-  const { Fr, GrumpkinScalar } = await import('@aztec/aztec.js/fields');
+  const { Fr } = await import('@aztec/aztec.js/fields');
+  const { Fq } = await import('@aztec/foundation/curves/bn254');
   const { AztecAddress } = await import('@aztec/aztec.js/addresses');
   const { SponsoredFeePaymentMethod } = await import('@aztec/aztec.js/fee/testing');
   const { createAztecNodeClient } = await import('@aztec/aztec.js/node');
@@ -98,7 +99,7 @@ async function main() {
 
   // Recover admin account
   const secretKey = Fr.fromString(accountData.secretKey);
-  const signingKey = GrumpkinScalar.fromString(accountData.signingKey);
+  const signingKey = Fq.fromString(accountData.signingKey);
   const salt = Fr.fromString(accountData.salt);
   const account = await wallet.createSchnorrAccount(secretKey, salt, signingKey);
   const adminAddress = account.address;
@@ -127,23 +128,65 @@ async function main() {
   const rawAmount = BigInt(Math.round(mintAmount * (10 ** TOKEN_DECIMALS)));
   const sendOpts = { from: adminAddress, fee: { paymentMethod }, wait: { timeout: 300 } };
 
+  // Register target as sender/contact so PXE can look up their public keys for note encryption
+  try {
+    await wallet.registerSender(targetAddr, 'mint-target');
+    log(`Registered target ${targetAddress.slice(0, 20)}... in PXE`);
+  } catch (e: any) {
+    log(`Note: Could not register target in PXE: ${e.message}`);
+  }
+
+  // Also register the target's account contract if deployed (needed for private note encryption)
+  try {
+    const targetContract = await node.getContract(targetAddr);
+    if (targetContract) {
+      // Register with the appropriate artifact based on the class
+      // Try EcdsaK first (browser-derived accounts), fall back to Schnorr
+      try {
+        const { EcdsaKAccountContract } = await import('@aztec/accounts/ecdsa');
+        const artifact = await new EcdsaKAccountContract(Buffer.alloc(32)).getContractArtifact();
+        await wallet.registerContract(targetContract, artifact);
+        log('Target account contract registered (EcdsaK)');
+      } catch {
+        try {
+          const { SchnorrAccountContract } = await import('@aztec/accounts/schnorr');
+          const { Fq: FqType } = await import('@aztec/foundation/curves/bn254');
+          const artifact = await new SchnorrAccountContract(FqType.random()).getContractArtifact();
+          await wallet.registerContract(targetContract, artifact);
+          log('Target account contract registered (Schnorr)');
+        } catch {}
+      }
+    } else {
+      log('WARNING: Target account not deployed on-chain. Private mint may fail to encrypt notes correctly.');
+    }
+  } catch (e: any) {
+    log(`Note: Could not register target contract: ${e.message}`);
+  }
+
+  // Helper to extract tx hash from 4.2 send() result
+  function txStr(result: any): string {
+    return result?.receipt?.txHash?.toString?.()
+      ?? result?.txHash?.toString?.()
+      ?? 'unknown';
+  }
+
   // 1. Mint public
   log(`Minting ${mintAmount} USDC publicly to target...`);
-  const pubReceipt = await token.methods
+  const pubResult = await token.methods
     .mint_to_public(targetAddr, rawAmount)
     .send(sendOpts);
-  log(`Public mint confirmed! Block: ${pubReceipt.blockNumber}, tx: ${pubReceipt.txHash.toString()}`);
+  log(`Public mint confirmed! tx: ${txStr(pubResult)}`);
 
   // 2. Optionally mint private (directly via mint_to_private)
   if (alsoPrivate) {
     log(`Minting ${mintAmount} USDC privately to target...`);
-    const privReceipt = await token.methods
+    const privResult = await token.methods
       .mint_to_private(targetAddr, rawAmount)
       .send(sendOpts);
-    log(`Private mint confirmed! Block: ${privReceipt.blockNumber}, tx: ${privReceipt.txHash.toString()}`);
+    log(`Private mint confirmed! tx: ${txStr(privResult)}`);
   }
 
-  // Check public balance (requires simulate options in this SDK version)
+  // Check public balance
   try {
     const pubBal = await token.methods.balance_of_public(targetAddr).simulate({
       from: adminAddress,
@@ -151,12 +194,6 @@ async function main() {
     log(`Target public balance: ${Number(pubBal) / (10 ** TOKEN_DECIMALS)} USDC`);
   } catch (e: any) {
     log(`Could not read public balance: ${e.message}`);
-  }
-
-  if (alsoPrivate) {
-    log(
-      'Private mint submitted successfully. Note: private balance visibility depends on the recipient wallet keys/indexer (Azguard may not display custom token private notes).'
-    );
   }
 
   console.log('\nDone!');

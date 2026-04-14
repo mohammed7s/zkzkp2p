@@ -110,12 +110,12 @@ interface NearIntentsSwap {
 The only code that changes is the bridge function. Everything else
 (burner, paymaster, zkp2p, UI) stays identical.
 
-## Key Addresses (devnet)
+## Key Addresses (testnet)
 
-- Aztec node: https://v4-devnet-2.aztec-labs.com
-- Aztec token: 0x276277413688cda0bac9133d2c55974bc8d735c3336ddccdeb16744e3d9dc600
+- Aztec node: https://rpc.testnet.aztec-labs.com
+- Aztec token: (needs redeployment on testnet)
 - Base USDC: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
-- Sponsored FPC: 0x1586f476995be97f07ebd415340a14be48dc28c6c661cc6bdddb80ae790caa4e
+- Sponsored FPC (testnet): 0x2ae02a54fd254586fd628ff46b71071bd8db32b63dc5d083f844f2c208a3923c
 
 ## Branches
 

@@ -45,9 +45,9 @@ export function getBaseTxExplorerUrl(txHash: string): string {
 
 export const CHAINS = {
   aztec: {
-    chainId: import.meta.env.NEXT_PUBLIC_AZTEC_CHAIN_ID || '1674512022',
-    nodeUrl: import.meta.env.NEXT_PUBLIC_AZTEC_NODE_URL || 'https://devnet.aztec-labs.com',
-    name: 'Aztec Devnet',
+    chainId: import.meta.env.NEXT_PUBLIC_AZTEC_CHAIN_ID || '11155111',
+    nodeUrl: import.meta.env.NEXT_PUBLIC_AZTEC_NODE_URL || 'https://rpc.testnet.aztec-labs.com',
+    name: 'Aztec Testnet',
   },
   base: {
     chainId: parseInt(import.meta.env.NEXT_PUBLIC_BASE_CHAIN_ID || String(BASE_CHAIN.id)),

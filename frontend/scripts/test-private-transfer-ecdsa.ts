@@ -43,7 +43,7 @@ if (existsSync(envPath)) {
   }
 }
 
-const AZTEC_NODE_URL = process.env.NEXT_PUBLIC_AZTEC_NODE_URL || 'https://v4-devnet-2.aztec-labs.com';
+const AZTEC_NODE_URL = process.env.NEXT_PUBLIC_AZTEC_NODE_URL || 'https://rpc.testnet.aztec-labs.com';
 const TOKEN_ADDRESS = process.env.NEXT_PUBLIC_AZTEC_TOKEN_ADDRESS as Hex | undefined;
 const TOKEN_DECIMALS = 6;
 const DOMAIN = 'zkzkp2p-aztec';

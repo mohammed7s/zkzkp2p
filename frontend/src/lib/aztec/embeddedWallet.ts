@@ -257,7 +257,9 @@ async function createWalletWithKeys(
   }
 
   const t0 = Date.now();
-  const wallet = await EmbeddedWallet.create(nodeUrl);
+  const wallet = await EmbeddedWallet.create(nodeUrl, {
+    pxeConfig: { proverEnabled: true },
+  });
   console.log('[EmbeddedWallet] Wallet created in', Date.now() - t0, 'ms');
 
   // Create ECDSA K account
@@ -284,37 +286,17 @@ async function createWalletWithKeys(
     console.warn('[EmbeddedWallet] Failed to register SponsoredFPC:', e.message);
   }
 
-  // Deploy account on-chain if not already deployed (required for sending private txs)
+  // Check if account is deployed on-chain (don't auto-deploy — let user trigger it)
   try {
     const { AztecAddress: AztecAddr } = await import('@aztec/aztec.js/addresses');
     const { createAztecNodeClient } = await import('@aztec/aztec.js/node');
     const nodeClient = createAztecNodeClient(nodeUrl);
     const deployed = await nodeClient.getContract(AztecAddr.fromString(aztecAddress));
-    if (!deployed) {
-      console.log('[EmbeddedWallet] Account not deployed on-chain, deploying...');
-      const { SponsoredFeePaymentMethod } = await import('@aztec/aztec.js/fee/testing');
-      const { SponsoredFPCContract } = await import('@aztec/noir-contracts.js/SponsoredFPC');
-      const { getContractInstanceFromInstantiationParams } = await import('@aztec/stdlib/contract');
-      const sponsoredFPCInstance = await getContractInstanceFromInstantiationParams(
-        SponsoredFPCContract.artifact,
-        { salt: new Fr(0) },
-      );
-      const paymentMethod = new SponsoredFeePaymentMethod(sponsoredFPCInstance.address);
-      const deployMethod = await account.getDeployMethod();
-      const t2 = Date.now();
-      await deployMethod.send({
-        // New account deployment is initiated by the deployer entrypoint, not the
-        // account itself. Using ZERO matches the working local create-account flow.
-        from: AztecAddr.ZERO,
-        fee: { paymentMethod },
-        wait: { timeout: 300 },
-      });
-      console.log('[EmbeddedWallet] Account deployed in', Date.now() - t2, 'ms');
-    } else {
-      console.log('[EmbeddedWallet] Account already deployed on-chain');
-    }
+    const { useWalletStore } = await import('@/stores/walletStore');
+    useWalletStore.getState().setAztecDeployed(!!deployed);
+    console.log('[EmbeddedWallet] Account deployed on-chain:', !!deployed);
   } catch (e: any) {
-    console.warn('[EmbeddedWallet] Account deployment failed (can retry later):', e.message);
+    console.warn('[EmbeddedWallet] Could not check deploy status:', e.message);
   }
 
   // Register token contract (class + instance) so balance queries and transfers work
@@ -383,6 +365,93 @@ export async function disconnectEmbeddedWallet(): Promise<void> {
  */
 export function getCachedWallet(): EmbeddedWallet | null {
   return cachedWallet?.wallet ?? null;
+}
+
+/**
+ * Deploy the current Aztec account on-chain.
+ * Uses SponsoredFPC for fees so the user doesn't need fee juice.
+ * Required before the account can receive private notes.
+ */
+export async function deployAztecAccount(): Promise<void> {
+  if (!cachedWallet) {
+    throw new Error('No Aztec wallet connected');
+  }
+
+  const { useWalletStore } = await import('@/stores/walletStore');
+  const store = useWalletStore.getState();
+
+  if (store.isAztecDeployed) {
+    console.log('[EmbeddedWallet] Account already deployed');
+    return;
+  }
+
+  store.setDeployingAztec(true);
+  try {
+    const wallet = cachedWallet.wallet;
+    const { CHAINS } = await import('@/config');
+    const nodeUrl = CHAINS.aztec.nodeUrl;
+
+    const { SponsoredFeePaymentMethod } = await import('@aztec/aztec.js/fee/testing');
+    const { SponsoredFPCContract } = await import('@aztec/noir-contracts.js/SponsoredFPC');
+    const { getContractInstanceFromInstantiationParams } = await import('@aztec/stdlib/contract');
+    const { NO_FROM } = await import('@aztec/aztec.js/account');
+    const { GasSettings } = await import('@aztec/stdlib/gas');
+    const { BaseWallet } = await import('@aztec/wallet-sdk/base-wallet');
+    const { createAztecNodeClient } = await import('@aztec/aztec.js/node');
+
+    // Register SponsoredFPC
+    const sponsoredFPCInstance = await getContractInstanceFromInstantiationParams(
+      SponsoredFPCContract.artifact,
+      { salt: new Fr(0) },
+    );
+    const paymentMethod = new SponsoredFeePaymentMethod(sponsoredFPCInstance.address);
+
+    // Get gas settings
+    const nodeClient = createAztecNodeClient(nodeUrl);
+    const maxFeesPerGas = (await nodeClient.getCurrentMinFees()).mul(1.5);
+    const gasSettings = GasSettings.default({ maxFeesPerGas });
+
+    // Get account from wallet's accounts list
+    const accounts = await wallet.getAccounts();
+    if (accounts.length === 0) throw new Error('No accounts registered in wallet');
+    const accountAddress = accounts[0].item;
+
+    // Get deploy method via the account manager approach
+    // Re-derive the account to get the AccountManager
+    const keys = getCachedKeys(cachedWallet.address);
+    if (!keys) throw new Error('No cached keys found');
+
+    const secret = Fr.fromString(keys.secret);
+    const salt = Fr.fromString(keys.salt);
+    const signingKey = Buffer.from(keys.signingKey, 'hex');
+    const account = await wallet.createECDSAKAccount(secret, salt, signingKey);
+
+    // Bypass EmbeddedWallet.sendTx pre-simulation
+    const originalSendTx = wallet.sendTx.bind(wallet);
+    (wallet as any).sendTx = BaseWallet.prototype.sendTx.bind(wallet);
+
+    try {
+      const deployMethod = await account.getDeployMethod();
+      console.log('[EmbeddedWallet] Deploying account...');
+      await deployMethod.send({
+        from: NO_FROM as any,
+        skipInstancePublication: false,
+        skipClassPublication: false,
+        fee: { paymentMethod, gasSettings },
+        additionalScopes: [accountAddress],
+        wait: { timeout: 300 },
+      });
+      console.log('[EmbeddedWallet] Account deployed!');
+      store.setAztecDeployed(true);
+    } finally {
+      (wallet as any).sendTx = originalSendTx;
+    }
+  } catch (e: any) {
+    console.error('[EmbeddedWallet] Deploy failed:', e.message);
+    throw e;
+  } finally {
+    store.setDeployingAztec(false);
+  }
 }
 
 /**

@@ -37,7 +37,7 @@ if (existsSync(envPath)) {
 }
 
 const ACCOUNT_FILE = resolve(__dirname, '..', '.aztec-account');
-const AZTEC_NODE_URL = process.env.NEXT_PUBLIC_AZTEC_NODE_URL || 'https://v4-devnet-2.aztec-labs.com';
+const AZTEC_NODE_URL = process.env.NEXT_PUBLIC_AZTEC_NODE_URL || 'https://rpc.testnet.aztec-labs.com';
 const TOKEN_ADDRESS = process.env.NEXT_PUBLIC_AZTEC_TOKEN_ADDRESS;
 const TOKEN_DECIMALS = 6;
 
@@ -91,7 +91,8 @@ async function main() {
   log(`Amount: ${fmt(amount)} USDC`);
 
   const { EmbeddedWallet } = await import('@aztec/wallets/embedded');
-  const { Fr, GrumpkinScalar } = await import('@aztec/aztec.js/fields');
+  const { Fr } = await import('@aztec/aztec.js/fields');
+  const { Fq } = await import('@aztec/foundation/curves/bn254');
   const { AztecAddress } = await import('@aztec/aztec.js/addresses');
   const { SponsoredFeePaymentMethod } = await import('@aztec/aztec.js/fee/testing');
   const { createAztecNodeClient } = await import('@aztec/aztec.js/node');
@@ -112,7 +113,7 @@ async function main() {
   const paymentMethod = new SponsoredFeePaymentMethod(sponsoredFPCInstance.address);
 
   const secretKey = Fr.fromString(accountData.secretKey);
-  const signingKey = GrumpkinScalar.fromString(accountData.signingKey);
+  const signingKey = Fq.fromString(accountData.signingKey);
   const salt = Fr.fromString(accountData.salt);
   const account = await wallet.createSchnorrAccount(secretKey, salt, signingKey, 'script-sender');
   const sender = account.address;

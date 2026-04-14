@@ -15,6 +15,10 @@ interface WalletState {
   // Transaction state - used to pause balance polling during txs
   isAztecTxPending: boolean;
 
+  // Account deployment state
+  isAztecDeployed: boolean | null; // null = unknown, true = deployed, false = not deployed
+  isDeployingAztec: boolean;
+
   // Preferences
   autoConnectAztec: boolean;
 
@@ -23,6 +27,8 @@ interface WalletState {
   setAztecConnected: (address: string | null, wallet: any | null) => void;
   setAztecError: (error: string | null) => void;
   setAztecTxPending: (pending: boolean) => void;
+  setAztecDeployed: (deployed: boolean) => void;
+  setDeployingAztec: (deploying: boolean) => void;
   disconnectAztec: () => void;
   disconnectAll: () => void;
 }
@@ -38,6 +44,8 @@ export const useWalletStore = create<WalletState>()(
       aztecWallet: null,
       aztecError: null,
       isAztecTxPending: false,
+      isAztecDeployed: null,
+      isDeployingAztec: false,
       autoConnectAztec: true,
 
       // EVM actions
@@ -62,6 +70,12 @@ export const useWalletStore = create<WalletState>()(
       setAztecTxPending: (pending) =>
         set({ isAztecTxPending: pending }),
 
+      setAztecDeployed: (deployed) =>
+        set({ isAztecDeployed: deployed }),
+
+      setDeployingAztec: (deploying) =>
+        set({ isDeployingAztec: deploying }),
+
       disconnectAztec: () =>
         set({
           aztecAddress: null,
@@ -69,6 +83,8 @@ export const useWalletStore = create<WalletState>()(
           aztecWallet: null,
           aztecError: null,
           isAztecTxPending: false,
+          isAztecDeployed: null,
+          isDeployingAztec: false,
         }),
 
       disconnectAll: () =>
@@ -80,6 +96,8 @@ export const useWalletStore = create<WalletState>()(
           aztecWallet: null,
           aztecError: null,
           isAztecTxPending: false,
+          isAztecDeployed: null,
+          isDeployingAztec: false,
         }),
     }),
     {

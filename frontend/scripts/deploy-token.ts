@@ -32,7 +32,7 @@ if (existsSync(envPath)) {
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-const AZTEC_NODE_URL = process.env.NEXT_PUBLIC_AZTEC_NODE_URL || 'https://v4-devnet-2.aztec-labs.com';
+const AZTEC_NODE_URL = process.env.NEXT_PUBLIC_AZTEC_NODE_URL || 'https://rpc.testnet.aztec-labs.com';
 const ACCOUNT_FILE = resolve(__dirname, '..', '.aztec-account');
 
 const TOKEN_NAME = process.env.TOKEN_NAME || 'Test USDC';
@@ -60,7 +60,8 @@ async function main() {
 
   // Dynamic imports
   const { EmbeddedWallet } = await import('@aztec/wallets/embedded');
-  const { Fr, GrumpkinScalar } = await import('@aztec/aztec.js/fields');
+  const { Fr } = await import('@aztec/aztec.js/fields');
+  const { Fq } = await import('@aztec/foundation/curves/bn254');
   const { SponsoredFeePaymentMethod } = await import('@aztec/aztec.js/fee/testing');
   const { SponsoredFPCContract } = await import('@aztec/noir-contracts.js/SponsoredFPC');
   const { TokenContract } = await import('@aztec/noir-contracts.js/Token');
@@ -86,7 +87,7 @@ async function main() {
   // 3. Recover existing account
   log('Recovering Schnorr account...');
   const secretKey = Fr.fromString(accountData.secretKey);
-  const signingKey = GrumpkinScalar.fromString(accountData.signingKey);
+  const signingKey = Fq.fromString(accountData.signingKey);
   const salt = Fr.fromString(accountData.salt);
   const account = await wallet.createSchnorrAccount(secretKey, salt, signingKey);
   const myAddress = account.address;
@@ -100,27 +101,35 @@ async function main() {
     log(`Precomputed token address: ${precomputedAddress}`);
   }
 
-  const deployReceipt = await deployMethod.send({
+  const deployResult = await deployMethod.send({
     from: myAddress,
     fee: { paymentMethod },
-    wait: { timeout: 300, returnReceipt: true },
+    wait: { timeout: 300 },
   });
-  const token = deployReceipt.contract;
-  const tokenAddress = deployReceipt.contractAddress?.toString() ?? token.address.toString();
-  log(`Deploy confirmed! Block: ${deployReceipt.blockNumber}`);
-  log(`Deploy tx hash: ${deployReceipt.txHash.toString()}`);
+  // In 4.2, send() returns { receipt, txHash } — extract what we can
+  const receipt = (deployResult as any).receipt ?? deployResult;
+  log(`Deploy confirmed! tx: ${receipt.txHash?.toString?.() ?? (deployResult as any).txHash?.toString?.() ?? 'unknown'}`);
 
+  // Use precomputed address (deterministic from deploy params)
+  const tokenAddress = precomputedAddress ?? deployMethod.address?.toString();
+  if (!tokenAddress) {
+    throw new Error('Could not determine token address');
+  }
   log(`Token address: ${tokenAddress}`);
 
   // 5. Mint tokens
   const mintAmount = BigInt(Math.round(MINT_AMOUNT * (10 ** TOKEN_DECIMALS)));
   log(`Minting ${MINT_AMOUNT} ${TOKEN_SYMBOL} publicly to ${myAddress.toString()}...`);
 
-  const mintReceipt = await token.methods
+  const { AztecAddress: AztecAddr } = await import('@aztec/aztec.js/addresses');
+  const tokenAddr = AztecAddr.fromString(tokenAddress);
+  const token = await TokenContract.at(tokenAddr, wallet);
+
+  const mintResult = await token.methods
     .mint_to_public(myAddress, mintAmount)
     .send({ from: myAddress, fee: { paymentMethod }, wait: { timeout: 300 } });
-  log(`Mint confirmed! Block: ${mintReceipt.blockNumber}`);
-  log(`Mint tx hash: ${mintReceipt.txHash.toString()}`);
+  const mintReceipt = (mintResult as any).receipt ?? mintResult;
+  log(`Mint confirmed! tx: ${mintReceipt.txHash?.toString?.() ?? 'unknown'}`);
 
   // 6. Check balance
   try {

@@ -1,25 +1,24 @@
 /**
- * zkp2p Offramp SDK Integration
+ * zkp2p / Peer Offramp SDK Integration
  *
- * This module provides a wrapper around the @zkp2p/offramp-sdk for creating
- * deposits on the zkp2p protocol after bridging from Aztec.
+ * Uses @zkp2p/sdk (OfframpClient) for creating deposits on the zkp2p protocol.
+ * This is the liquidity provider side — our burner wallet deposits USDC
+ * and accepts fiat payments from takers.
  */
 
 import {
-  Zkp2pClient,
-  Currency,
-  getContracts,
+  OfframpClient,
   SUPPORTED_CHAIN_IDS,
+  getContracts,
   type CreateDepositParams,
-} from '@zkp2p/offramp-sdk';
-import type { WalletClient, Hash } from 'viem';
+} from '@zkp2p/sdk';
+import { publicActions, type WalletClient, type Hash } from 'viem';
 
-// Base Sepolia for testnet
-const CHAIN_ID = SUPPORTED_CHAIN_IDS.BASE_SEPOLIA;
-const RUNTIME_ENV = 'staging' as const;
+// Base Mainnet production
+const CHAIN_ID = SUPPORTED_CHAIN_IDS.BASE_MAINNET;
 
 // Get contract addresses
-const { addresses } = getContracts(CHAIN_ID, RUNTIME_ENV);
+const { addresses } = getContracts(CHAIN_ID);
 export const USDC_ADDRESS = addresses.usdc as `0x${string}`;
 export const ESCROW_ADDRESS = addresses.escrow;
 
@@ -33,7 +32,7 @@ export interface CreateZkp2pDepositParams {
   minIntentAmount: bigint;
   maxIntentAmount: bigint;
   paymentMethod: 'revolut' | 'wise' | 'venmo';
-  paymentTag: string; // revtag, email, or venmo username
+  paymentTag: string;
   currency: 'USD' | 'EUR' | 'GBP';
   conversionRate?: string;
 }
@@ -43,22 +42,38 @@ export interface CreateZkp2pDepositResult {
 }
 
 /**
+ * Map payment method + tag to the correct depositData format.
+ * Each payment processor expects a specific key.
+ */
+function getDepositData(
+  paymentMethod: 'revolut' | 'wise' | 'venmo',
+  paymentTag: string
+): Record<string, string> {
+  switch (paymentMethod) {
+    case 'revolut':
+      return { revolutUsername: paymentTag.replace(/^@/, '') };
+    case 'wise':
+      return { wisetag: paymentTag.replace(/^@/, '') };
+    case 'venmo':
+      return { venmoUsername: paymentTag.replace(/^@/, '') };
+    default:
+      return { tag: paymentTag };
+  }
+}
+
+/**
  * Create a zkp2p client instance
  */
-export function createZkp2pClient(walletClient: WalletClient): Zkp2pClient {
-  return new Zkp2pClient({
+export function createZkp2pClient(walletClient: WalletClient): OfframpClient {
+  return new OfframpClient({
     walletClient,
     chainId: CHAIN_ID,
-    runtimeEnv: RUNTIME_ENV,
-    // API key is optional for testnet
-    apiKey: import.meta.env.NEXT_PUBLIC_ZKP2P_API_KEY,
   });
 }
 
 /**
- * Create a deposit on zkp2p
- *
- * This is called after the user has redeemed USDC on Base from the Train bridge.
+ * Create a deposit on zkp2p.
+ * Called after the burner has received USDC on Base from the solver.
  */
 export async function createZkp2pDeposit(
   params: CreateZkp2pDepositParams
@@ -75,21 +90,34 @@ export async function createZkp2pDeposit(
   } = params;
 
   const client = createZkp2pClient(walletClient);
+  const receiptClient = walletClient.extend(publicActions);
 
-  // Map payment method to deposit data format
   const depositData = getDepositData(paymentMethod, paymentTag);
 
-  // Create conversion rates array (one per payment method)
   const conversionRates = [[
-    { currency: currency as keyof typeof Currency, conversionRate },
+    { currency, conversionRate },
   ]];
 
   console.log('[zkp2p] Creating deposit...', {
     token: USDC_ADDRESS,
     amount: amount.toString(),
     paymentMethod,
+    depositData,
     currency,
   });
+
+  // Ensure USDC is approved for the escrow contract
+  console.log('[zkp2p] Ensuring USDC allowance...');
+  const allowanceResult = await client.ensureAllowance({
+    token: USDC_ADDRESS,
+    amount,
+    spender: ESCROW_ADDRESS,
+  });
+  if (!allowanceResult.hadAllowance && allowanceResult.hash) {
+    console.log('[zkp2p] Approval tx hash:', allowanceResult.hash);
+    await receiptClient.waitForTransactionReceipt({ hash: allowanceResult.hash as Hash });
+  }
+  console.log('[zkp2p] Allowance OK');
 
   const result = await client.createDeposit({
     token: USDC_ADDRESS,
@@ -99,47 +127,39 @@ export async function createZkp2pDeposit(
       max: maxIntentAmount,
     },
     processorNames: [paymentMethod],
-    depositData: [depositData],
+    depositData: [{ ...depositData, offchainId: Object.values(depositData)[0] }] as any,
     conversionRates,
   });
 
   console.log('[zkp2p] Deposit result:', result);
 
   return {
-    hash: result.hash,
+    hash: (result as any)?.hash || '0x',
   };
 }
 
 /**
- * Get deposit data format for a payment method
- */
-function getDepositData(
-  paymentMethod: 'revolut' | 'wise' | 'venmo',
-  paymentTag: string
-): Record<string, string> {
-  switch (paymentMethod) {
-    case 'revolut':
-      // Revolut uses revtag (e.g., @username)
-      return { tag: paymentTag.startsWith('@') ? paymentTag : `@${paymentTag}` };
-    case 'wise':
-      // Wise uses email
-      return { email: paymentTag };
-    case 'venmo':
-      // Venmo uses username
-      return { username: paymentTag.replace('@', '') };
-    default:
-      return { tag: paymentTag };
-  }
-}
-
-/**
- * Get user's deposits from zkp2p
+ * Get all deposits for the connected wallet
  */
 export async function getZkp2pDeposits(walletClient: WalletClient) {
   const client = createZkp2pClient(walletClient);
+  return client.getDeposits();
+}
 
-  const deposits = await client.getDeposits();
-  return deposits;
+/**
+ * Get deposits by owner address
+ */
+export async function getZkp2pAccountDeposits(walletClient: WalletClient, owner: `0x${string}`) {
+  const client = createZkp2pClient(walletClient);
+  return client.getAccountDeposits(owner);
+}
+
+/**
+ * Get a specific deposit by ID
+ */
+export async function getZkp2pDeposit(walletClient: WalletClient, depositId: bigint) {
+  const client = createZkp2pClient(walletClient);
+  return client.getDeposit(depositId);
 }
 
 /**

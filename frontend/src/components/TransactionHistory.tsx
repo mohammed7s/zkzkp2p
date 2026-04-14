@@ -63,7 +63,7 @@ export function TransactionHistory() {
                           <a
                             href={isShield
                               ? `https://sepolia.basescan.org/tx/${flow.txHashes.open}`
-                              : `https://devnet.aztecscan.xyz/tx-effects/${flow.txHashes.open}`}
+                              : `https://testnet.aztecscan.xyz/tx-effects/${flow.txHashes.open}`}
                             target="_blank"
                             rel="noopener noreferrer"
                             className={`${isShield ? 'text-blue-600 hover:text-blue-400' : 'text-green-600 hover:text-green-400'} underline`}
@@ -77,7 +77,7 @@ export function TransactionHistory() {
                           {isShield ? 'aztec' : 'base'} tx:{' '}
                           <a
                             href={isShield
-                              ? `https://devnet.aztecscan.xyz/tx-effects/${flow.txHashes.claim}`
+                              ? `https://testnet.aztecscan.xyz/tx-effects/${flow.txHashes.claim}`
                               : `https://sepolia.basescan.org/tx/${flow.txHashes.claim}`}
                             target="_blank"
                             rel="noopener noreferrer"

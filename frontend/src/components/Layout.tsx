@@ -11,11 +11,14 @@ import {
   formatTokenAmount,
   TOKENS,
 } from '@/lib/bridge';
-import { TIMING } from '@/config';
+import { TIMING, BASE_EXPLORER_URL } from '@/config';
 import { usePublicClient } from 'wagmi';
 import { CreateDeposit } from './CreateDeposit';
 import { TransactionHistory } from './TransactionHistory';
 import { PrivateAccount } from './PrivateAccount';
+import { MyDeposits } from './MyDeposits';
+import { scanAndRecover, type FundedBurner } from '@/lib/burner';
+import { getSmartAccountAddress } from '@/lib/paymaster';
 import type { Hex } from 'viem';
 
 const DOCS_URL = '/docs';
@@ -42,6 +45,8 @@ export function Layout() {
     aztecWallet,
     aztecError,
     isAztecTxPending,
+    isAztecDeployed,
+    isDeployingAztec,
     disconnectAztec,
     setAztecConnected,
     setAztecError
@@ -54,9 +59,15 @@ export function Layout() {
   const [privateBalance, setPrivateBalance] = useState<bigint>(0n);
   const [publicBalance, setPublicBalance] = useState<bigint>(0n);
   const [baseBalance, setBaseBalance] = useState<bigint>(0n);
+  const [burnerBalance, setBurnerBalance] = useState<bigint>(0n);
   const [isConnectingAztec, setIsConnectingAztec] = useState(false);
   const [isLoadingBalances, setIsLoadingBalances] = useState(false);
   const [copiedAddress, setCopiedAddress] = useState<'aztec' | 'base' | null>(null);
+  const [showBalanceBreakdown, setShowBalanceBreakdown] = useState(false);
+  const [showDepositWizard, setShowDepositWizard] = useState(false);
+
+  // Unified balance = Aztec private + pending burner funds
+  const unifiedBalance = privateBalance + burnerBalance;
 
   const copyToClipboard = async (address: string | undefined | null, type: 'aztec' | 'base') => {
     if (!address) return;
@@ -209,6 +220,26 @@ export function Layout() {
         }
       }
 
+      // Scan burners for stuck funds (only on forced refresh or first load)
+      if (publicClient && walletClient && evmAddress && TOKENS.base.address) {
+        try {
+          const result = await scanAndRecover(
+            walletClient,
+            evmAddress as Hex,
+            publicClient,
+            TOKENS.base.address as Hex,
+            getSmartAccountAddress,
+          );
+          const totalBurner = result.fundedBurners.reduce((sum, b) => sum + b.balance, 0n);
+          setBurnerBalance(totalBurner);
+          if (totalBurner > 0n) {
+            console.log('[Layout] Stuck burner balance:', formatTokenAmount(totalBurner));
+          }
+        } catch (e) {
+          // Burner scan is best-effort
+        }
+      }
+
       if (Object.keys(newBalances).length > 0) {
         try {
           const cacheKey = getBalanceCacheKey(aztecAddress, evmAddress);
@@ -291,13 +322,37 @@ export function Layout() {
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-gray-600">aztec:</span>
                   {isAztecConnected ? (
-                    <button
-                      onClick={() => copyToClipboard(aztecAddress, 'aztec')}
-                      className="text-sm hover:text-white cursor-pointer transition-colors"
-                      title="Click to copy full address"
-                    >
-                      {copiedAddress === 'aztec' ? 'copied!' : shortenAddress(aztecAddress || '')}
-                    </button>
+                    <>
+                      <button
+                        onClick={() => copyToClipboard(aztecAddress, 'aztec')}
+                        className="text-sm hover:text-white cursor-pointer transition-colors"
+                        title="Click to copy full address"
+                      >
+                        {copiedAddress === 'aztec' ? 'copied!' : shortenAddress(aztecAddress || '')}
+                      </button>
+                      {isAztecDeployed === true && (
+                        <span className="text-green-500 text-xs" title="Account deployed on-chain">&#10003;</span>
+                      )}
+                      {isAztecDeployed === false && !isDeployingAztec && (
+                        <button
+                          onClick={async () => {
+                            try {
+                              const { deployAztecAccount } = await import('@/lib/aztec/embeddedWallet');
+                              await deployAztecAccount();
+                            } catch (e: any) {
+                              setAztecError(`Deploy failed: ${e.message}`);
+                            }
+                          }}
+                          className="text-xs text-yellow-500 hover:text-yellow-300 border border-yellow-800 hover:border-yellow-500 px-1.5 py-0.5 transition-colors"
+                          title="Deploy account on-chain (required for private transfers)"
+                        >
+                          deploy
+                        </button>
+                      )}
+                      {isDeployingAztec && (
+                        <span className="text-xs text-yellow-500 animate-pulse">deploying...</span>
+                      )}
+                    </>
                   ) : (isConnectingAztec || isAutoReconnecting) ? (
                     <span className="text-xs text-gray-500 animate-pulse">setting up...</span>
                   ) : aztecError ? (
@@ -328,20 +383,7 @@ export function Layout() {
                 <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
               </svg>
             </a>
-            {isAztecConnected && (
-              <span className="text-sm flex items-center gap-2">
-                <span className="text-gray-500">private:</span>{' '}
-                <span className="text-white">{formatTokenAmount(privateBalance)} USDC</span>
-                <button
-                  onClick={() => fetchBalances(true)}
-                  disabled={isLoadingBalances}
-                  className="ml-1 px-2 py-0.5 text-xs border border-gray-700 hover:border-gray-500 hover:text-white disabled:opacity-50 transition-colors"
-                  title="Refresh balances"
-                >
-                  {isLoadingBalances ? 'loading...' : 'refresh'}
-                </button>
-              </span>
-            )}
+            {/* Balance moved to main content area */}
             {!isEvmConnected && (
               <ConnectButton.Custom>
                 {({ openConnectModal }) => (
@@ -403,22 +445,95 @@ export function Layout() {
             </footer>
           </div>
         ) : (
-          <>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-              <CreateDeposit
-                privateBalance={privateBalance}
-                onRefreshBalances={fetchBalances}
-              />
+          <div className="max-w-lg mx-auto space-y-6">
+            {/* Wallet Balance — Big Display */}
+            <div className="text-center space-y-2 py-6">
+              <div className="text-gray-500 text-xs uppercase tracking-wider">private balance</div>
+              <div className="flex items-center justify-center gap-3">
+                <span className="text-4xl text-white font-light">{formatTokenAmount(unifiedBalance)}</span>
+                <span className="text-gray-500 text-lg">USDC</span>
+              </div>
+              <div className="flex items-center justify-center gap-3 text-xs">
+                {isAztecDeployed === true && (
+                  <span className="text-green-700">deployed</span>
+                )}
+                {isAztecDeployed === false && (
+                  <span className="text-yellow-600">not deployed</span>
+                )}
+                <button
+                  onClick={() => fetchBalances(true)}
+                  disabled={isLoadingBalances}
+                  className="text-gray-600 hover:text-gray-400 disabled:opacity-50"
+                >
+                  {isLoadingBalances ? 'syncing...' : 'refresh'}
+                </button>
+                <button
+                  onClick={() => setShowBalanceBreakdown(!showBalanceBreakdown)}
+                  className="text-gray-700 hover:text-gray-400"
+                >
+                  {showBalanceBreakdown ? 'simple' : 'advanced'}
+                </button>
+              </div>
+
+              {/* Advanced Breakdown */}
+              {showBalanceBreakdown && (
+                <div className="max-w-xs mx-auto border border-gray-800 p-3 space-y-2 text-xs mt-3">
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">aztec private</span>
+                    <span className="text-gray-300">{formatTokenAmount(privateBalance)} USDC</span>
+                  </div>
+                  {burnerBalance > 0n && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">pending (burners)</span>
+                      <span className="text-gray-300">{formatTokenAmount(burnerBalance)} USDC</span>
+                    </div>
+                  )}
+                  {(burnerBalance > 0n) && (
+                    <div className="pt-1">
+                      <button className="text-xs text-gray-600 hover:text-gray-400 underline">
+                        consolidate to aztec
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Action Buttons */}
+            <div className="space-y-2">
               <PrivateAccount
                 privateBalance={privateBalance}
                 publicBalance={publicBalance}
                 baseBalance={baseBalance}
+                burnerBalance={burnerBalance}
                 isEvmConnected={isEvmConnected}
                 onTopUp={fetchBalances}
               />
+
+              {!showDepositWizard ? (
+                <button
+                  onClick={() => setShowDepositWizard(true)}
+                  disabled={unifiedBalance <= 0n}
+                  className="w-full py-3 text-sm border border-gray-700 hover:border-gray-500 hover:text-white disabled:opacity-30 transition-colors"
+                >
+                  deposit on peer.xyz
+                </button>
+              ) : (
+                <CreateDeposit
+                  privateBalance={unifiedBalance}
+                  onRefreshBalances={fetchBalances}
+                  onClose={() => setShowDepositWizard(false)}
+                />
+              )}
             </div>
+
+            {/* Active Deposits on peer.xyz */}
+            {evmAddress && (
+              <MyDeposits ownerAddress={evmAddress} />
+            )}
+
             <TransactionHistory />
-          </>
+          </div>
         )}
       </main>
     </div>

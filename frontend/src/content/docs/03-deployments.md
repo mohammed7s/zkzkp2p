@@ -5,16 +5,16 @@
 | Network | Chain ID | RPC |
 |---------|----------|-----|
 | Base | 8453 | `https://mainnet.base.org` |
-| Aztec Devnet | — | `https://next.devnet.aztec-labs.com` |
+| Aztec Testnet | 11155111 (Sepolia L1) | `https://rpc.testnet.aztec-labs.com` |
 
 ## Tokens
 
-**USDC:** Native USDC on Base, bridged USDC on Aztec devnet.
+**USDC:** Native USDC on Base, bridged USDC on Aztec testnet.
 
 | Token | Network | Address |
 |-------|---------|---------|
 | USDC | Base | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
-| USDC | Aztec Devnet | Set via `NEXT_PUBLIC_AZTEC_TOKEN_ADDRESS` |
+| USDC | Aztec Testnet | Set via `NEXT_PUBLIC_AZTEC_TOKEN_ADDRESS` |
 
 ## Bridge
 

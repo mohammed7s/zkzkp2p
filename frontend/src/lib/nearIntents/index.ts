@@ -250,16 +250,18 @@ export async function sendToSolver(params: {
   );
   const paymentMethod = new SponsoredFeePaymentMethod(sponsoredFPCInstance.address);
 
-  const sentTx = await (tokenContract.methods as any)
+  const result = await (tokenContract.methods as any)
     .transfer(toAddr, amount)
     .send({
       from: fromAddr,
       fee: { paymentMethod },
       wait: { timeout: 300 },
     });
-  const receipt = await sentTx.wait();
 
-  const txHash = receipt.txHash?.toString() || sentTx.txHash?.toString() || 'unknown';
+  // 4.2: send() with wait returns {receipt, txHash} directly — no .wait()
+  const txHash = result?.receipt?.txHash?.toString?.()
+    ?? result?.txHash?.toString?.()
+    ?? 'unknown';
   console.log('[NearIntents/Mock] Aztec transfer confirmed:', txHash);
   return txHash;
 }
@@ -326,7 +328,8 @@ async function getSolverAztecWallet() {
     }
 
     const { EmbeddedWallet } = await import('@aztec/wallets/embedded');
-    const { Fr, GrumpkinScalar } = await import('@aztec/aztec.js/fields');
+    const { Fr } = await import('@aztec/aztec.js/fields');
+    const { Fq } = await import('@aztec/foundation/curves/bn254');
     const { AztecAddress } = await import('@aztec/aztec.js/addresses');
     const { TokenContract } = await import('@aztec/noir-contracts.js/Token');
     const { SponsoredFPCContract } = await import('@aztec/noir-contracts.js/SponsoredFPC');
@@ -346,7 +349,7 @@ async function getSolverAztecWallet() {
     const account = await wallet.createSchnorrAccount(
       Fr.fromString(solver.secretKey),
       Fr.fromString(solver.salt),
-      (GrumpkinScalar as any).fromString(solver.signingKey),
+      Fq.fromString(solver.signingKey),
       'mock-solver',
     );
 
@@ -387,12 +390,10 @@ async function getSolverAztecWallet() {
 async function ensureSolverPrivateBalance(amount: bigint): Promise<void> {
   const { account, paymentMethod, token } = await getSolverAztecWallet();
 
-  const privateBalance = BigInt(
-    (
-      await token.methods.balance_of_private(account.address).simulate({
-        from: account.address,
-      })
-    )?.toString() || '0'
+  const privateBalance = toBigInt(
+    await token.methods.balance_of_private(account.address).simulate({
+      from: account.address,
+    })
   );
 
   if (privateBalance >= amount) {
@@ -400,12 +401,10 @@ async function ensureSolverPrivateBalance(amount: bigint): Promise<void> {
   }
 
   const required = amount - privateBalance;
-  const publicBalance = BigInt(
-    (
-      await token.methods.balance_of_public(account.address).simulate({
-        from: account.address,
-      })
-    )?.toString() || '0'
+  const publicBalance = toBigInt(
+    await token.methods.balance_of_public(account.address).simulate({
+      from: account.address,
+    })
   );
 
   if (publicBalance < required) {
@@ -433,12 +432,10 @@ async function solverSendAztecUSDC(params: {
   const { AztecAddress } = await import('@aztec/aztec.js/addresses');
 
   const recipient = AztecAddress.fromString(recipientAddress);
-  const publicBalance = BigInt(
-    (
-      await token.methods.balance_of_public(account.address).simulate({
-        from: account.address,
-      })
-    )?.toString() || '0'
+  const publicBalance = toBigInt(
+    await token.methods.balance_of_public(account.address).simulate({
+      from: account.address,
+    })
   );
 
   let receipt: any;
@@ -782,6 +779,16 @@ export async function executeBaseToAztecBridge(params: {
 // ============================================================================
 // Helpers (shared between mock and real)
 // ============================================================================
+
+/** Extract bigint from 4.2 simulate() result which returns {result: "value", ...} */
+function toBigInt(raw: any): bigint {
+  if (typeof raw === 'bigint') return raw;
+  if (typeof raw === 'string') return BigInt(raw);
+  if (typeof raw === 'number') return BigInt(raw);
+  if (raw?.result !== undefined) return toBigInt(raw.result);
+  if (raw?.toBigInt) return raw.toBigInt();
+  return BigInt(raw?.toString() || '0');
+}
 
 export function formatTokenAmount(amount: bigint, decimals: number = 6): string {
   const divisor = BigInt(10 ** decimals);

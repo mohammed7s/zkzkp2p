@@ -55,7 +55,9 @@ async function callUnconstrained(
 
   // .simulate() takes an options object { from }, not a positional address.
   // `from` sets the scope for note discovery (whose notes to decrypt).
-  const result = await fn.simulate({ from: userAddr });
+  const raw = await fn.simulate({ from: userAddr });
+  // 4.2 returns {result: "value", offchainEffects: [], ...} instead of a direct value
+  const result = raw?.result !== undefined ? raw.result : raw;
   return BigInt(result?.toString() || '0');
 }
 

@@ -96,6 +96,8 @@ export async function createSponsoredSmartAccountClient(privateKey: Hex) {
   const smartAccount = await createBurnerSmartAccount(publicClient as PublicClient, privateKey);
 
   // Create the smart account client with paymaster
+  // Note: Coinbase paymaster doesn't support pimlico_getUserOperationGasPrice,
+  // so we estimate fees from the public client instead.
   const smartAccountClient = createSmartAccountClient({
     account: smartAccount,
     chain: BASE_CHAIN,
@@ -103,8 +105,18 @@ export async function createSponsoredSmartAccountClient(privateKey: Hex) {
     bundlerTransport: http(rpcUrl),
     userOperation: {
       estimateFeesPerGas: async () => {
-        const gasPrice = await paymasterClient.getUserOperationGasPrice();
-        return gasPrice.fast;
+        try {
+          const gasPrice = await paymasterClient.getUserOperationGasPrice();
+          return gasPrice.fast;
+        } catch {
+          // Coinbase paymaster doesn't support pimlico gas price — use public client
+          const block = await publicClient.getBlock();
+          const baseFee = block.baseFeePerGas ?? 1000000n;
+          return {
+            maxFeePerGas: baseFee * 2n,
+            maxPriorityFeePerGas: baseFee / 10n,
+          };
+        }
       },
     },
   });
