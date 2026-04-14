@@ -63,10 +63,10 @@ export function PrivateAccount({
           onSendingToSolver: () => setStatus('sending Base USDC to solver...'),
           onBaseTxConfirmed: (hash) => {
             setTxHash(hash);
-            setStatus('waiting for aztec fill...');
+            setStatus('base tx confirmed. generating zero-knowledge proof (1-2 min)...');
           },
-          onWaitingForFill: () => setStatus('solver sending private USDC...'),
-          onAztecTxConfirmed: () => setStatus('done!'),
+          onWaitingForFill: () => setStatus('generating zero-knowledge proof — your private transfer is being encrypted...'),
+          onAztecTxConfirmed: () => setStatus('private transfer confirmed!'),
         },
       });
 
@@ -94,9 +94,6 @@ export function PrivateAccount({
         className="w-full py-3 text-sm border border-gray-700 hover:border-gray-500 hover:text-white disabled:opacity-30 transition-colors"
       >
         fund wallet
-        {isEvmConnected && baseBalance > 0n && (
-          <span className="text-gray-600 ml-2">({formatTokenAmount(baseBalance)} USDC on base)</span>
-        )}
       </button>
     );
   }
@@ -113,6 +110,9 @@ export function PrivateAccount({
 
       <div className="text-xs text-gray-600">
         Send USDC from your Base wallet to your private balance.
+        {baseBalance > 0n && (
+          <span className="text-gray-400 ml-1">({formatTokenAmount(baseBalance)} USDC available)</span>
+        )}
       </div>
 
       <div className="flex gap-2">
@@ -135,13 +135,27 @@ export function PrivateAccount({
         </div>
       )}
 
-      <button
-        onClick={handleFund}
-        disabled={isFunding || !hasEnoughBase || amountBigInt <= 0n}
-        className="w-full py-2 text-sm bg-white text-black hover:bg-gray-200 disabled:opacity-30 transition-colors"
-      >
-        {isFunding ? status || 'funding...' : `fund ${amount || '0'} USDC`}
-      </button>
+      {!isFunding ? (
+        <button
+          onClick={handleFund}
+          disabled={!hasEnoughBase || amountBigInt <= 0n}
+          className="w-full py-2 text-sm bg-white text-black hover:bg-gray-200 disabled:opacity-30 transition-colors"
+        >
+          fund {amount || '0'} USDC
+        </button>
+      ) : (
+        <div className="border border-gray-700 bg-gray-900/50 p-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 border-2 border-gray-500 border-t-white rounded-full animate-spin" />
+            <span className="text-sm text-gray-300">{status || 'funding...'}</span>
+          </div>
+          {status?.includes('proof') && (
+            <div className="w-full bg-gray-800 h-1 overflow-hidden">
+              <div className="h-full bg-gray-600 animate-pulse" style={{ width: '60%' }} />
+            </div>
+          )}
+        </div>
+      )}
 
       {error && (
         <div className="text-xs text-red-500 break-all">{error}</div>

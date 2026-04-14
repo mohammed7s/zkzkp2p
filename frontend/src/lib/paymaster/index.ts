@@ -109,12 +109,13 @@ export async function createSponsoredSmartAccountClient(privateKey: Hex) {
           const gasPrice = await paymasterClient.getUserOperationGasPrice();
           return gasPrice.fast;
         } catch {
-          // Coinbase paymaster doesn't support pimlico gas price — use public client
+          // Coinbase paymaster doesn't support pimlico gas price — estimate from chain
           const block = await publicClient.getBlock();
-          const baseFee = block.baseFeePerGas ?? 1000000n;
+          const baseFee = block.baseFeePerGas ?? 2000000n;
+          const minPriority = 1000000n; // Bundler requires at least 1000000
           return {
-            maxFeePerGas: baseFee * 2n,
-            maxPriorityFeePerGas: baseFee / 10n,
+            maxFeePerGas: baseFee * 3n + minPriority,
+            maxPriorityFeePerGas: minPriority,
           };
         }
       },
